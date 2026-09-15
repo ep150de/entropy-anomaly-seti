@@ -1,0 +1,5 @@
+tic_id,name,sector,priority,known_anomalies,ra_deg,dec_deg,distance_ly,available_sectors,tmag
+261136674,Maia,11,1,4,56.05,24.13,0.14,[11],10.0
+261136679,Pleiades member D,11,0,24,56.05,24.13,0.14,[11],10.0
+231844178,Pleiades member B,11,0,0,56.05,24.13,0.14,[11],10.0
+393928046,Pleiades member C,11,0,0,56.05,24.13,0.14,[11],10.0
