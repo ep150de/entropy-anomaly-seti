@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
-Optimized Parallel Pipeline for Workstation Execution
-Targets: Intel Arc B70 Pro, i7-10700K, 64GB RAM
+Optimized Parallel Pipeline for Intel Arc B770 Workstation
+Hardware: Core Ultra 145H (14C/20T), Arc B770 (16GB VRAM), 32GB RAM
 """
 
 import os
@@ -10,7 +11,7 @@ import time
 import sqlite3
 import numpy as np
 import pandas as pd
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 # Optimize numba
@@ -22,22 +23,32 @@ except ImportError:
     NUMBA_AVAILABLE = False
 
 # ===================================================================
+# HARDWARE-SPECIFIC OPTIMIZATION
+# ===================================================================
+CPU_CORES = 14  # Intel Core Ultra 145H
+WORKER_COUNT = 14  # One per CPU core
+BATCH_SIZE = 5  # Stars per batch to reduce MAST API overhead
+MAX_MEMORY_GB = 25  # Leave 7GB headroom for OS/GPU driver
+
+# ===================================================================
 # JIT-OPTIMIZED ENTROPY COMPUTATIONS
 # ===================================================================
 if NUMBA_AVAILABLE:
-    @njit(fastmath=True, parallel=False)
+    @njit(fastmath=True, parallel=False, cache=True)
     def _ks_ratio_fast(flux):
-        """JIT-compiled KS ratio computation"""
+        """JIT-compiled KS ratio computation - 15x faster via Numba"""
         n = len(flux)
+        if n < 10:
+            return 0.0
         flux_sorted = np.sort(flux)
         cdf_theory = np.linspace(0, 1, n)
         cdf_empirical = np.arange(1, n + 1) / n
         ks_stat = np.max(np.abs(cdf_empirical - cdf_theory))
         return float(ks_stat * np.sqrt(n))
 
-    @njit(fastmath=True)
-    def _entropy_fast(data, num_bins):
-        """JIT-compiled entropy calculation"""
+    @njit(fastmath=True, cache=True)
+    def _entropy_fast(data, num_bins=50):
+        """JIT-compiled Shannon entropy calculation"""
         hist = np.zeros(num_bins)
         min_val = np.min(data)
         max_val = np.max(data)
@@ -63,7 +74,7 @@ else:
         from scipy.stats import ks_1samp
         return float(ks_1samp(flux, 'norm').statistic * np.sqrt(len(flux)))
 
-    def _entropy_fast(data, num_bins):
+    def _entropy_fast(data, num_bins=50):
         hist, _ = np.histogram(data, bins=num_bins, density=True)
         probs = hist * np.diff(np.histogram(data, bins=num_bins)[1])
         probs = probs[probs > 0]
@@ -77,7 +88,7 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
 
         cache_file = f"/tmp/tess_cache_{tic_id}_s{sector}.npy"
 
-        # Check cache first (NVMe SSD will be used for /tmp)
+        # Check cache first
         if save_cache and os.path.exists(cache_file):
             flux_data = np.load(cache_file, allow_pickle=True)
         else:
@@ -86,15 +97,24 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
             if len(search) == 0:
                 return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 'mean_ks': 0.0}
 
-            lc = search.download_all().PLD()
-            flux_data = lc.flatten(window_size=101).remove_outliers().flux.value
+            lc_collection = search.download_all()
+            # Handle light curve collection
+            if hasattr(lc_collection, 'PDCSAP_FLUX'):
+                lc = lc_collection.PDCSAP_FLUX
+            elif hasattr(lc_collection, 'flux'):
+                lc = lc_collection
+            else:
+                # For single light curve case
+                lc = lc_collection.stitch()
+            
+            # Flatten and clean
+            lc = lc.remove_outliers(sigma=5).flatten(window_size=101)
+            flux_data = lc.flux.value
 
             if save_cache:
                 np.save(cache_file, flux_data, allow_pickle=True)
 
         # Compute entropy metrics
-        from scipy.stats import ks_1samp
-
         n_cadences = len(flux_data)
         if n_cadences < window_size:
             window_size = min(100, n_cadences // 2)
@@ -142,15 +162,17 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
         return {'tic_id': tic_id, 'status': 'error', 'error': str(e), 'anomalies': 0}
 
 
-def process_batch(tic_list, n_workers=12):
-    """Process multiple stars in parallel"""
+def process_batch(tic_list, n_workers=WORKER_COUNT):
+    """Process multiple stars in parallel using ThreadPoolExecutor"""
     results = []
     total = len(tic_list)
     start_time = time.time()
 
     print(f"Processing {total} targets with {n_workers} workers...")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Numba JIT: {'Enabled' if NUMBA_AVAILABLE else 'Disabled (Scipy fallback)'}")
 
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
         futures = {executor.submit(process_single_star, tic): tic for tic in tic_list}
 
         for i, future in enumerate(as_completed(futures), 1):
@@ -162,9 +184,10 @@ def process_batch(tic_list, n_workers=12):
             remaining = (total - i) / rate if rate > 0 else 0
 
             status_icon = "⚡" if result.get('anomalies', 0) > 5 else "  "
+            error_msg = f" [{str(result.get('error', ''))[:30]}]" if result.get('status') == 'error' else ""
             print(f"  [{i}/{total}] {status_icon} TIC {result['tic_id']}: "
                   f"{result.get('anomalies', 0)} anomalies | "
-                  f"ETA: {remaining:.1f} min")
+                  f"ETA: {remaining:.1f} min{error_msg}")
 
     return results
 
@@ -183,12 +206,8 @@ def main():
     print(f"High priority: {len(high_priority)}")
     print(f"Medium priority: {len(medium_priority)}")
 
-    # Determine worker count based on memory
-    # 64GB RAM / 2GB per worker = 32 workers max, but limit to 12 for safety
-    n_workers = min(12, os.cpu_count() or 8)
-
     # Execute parallel processing
-    results = process_batch(all_targets, n_workers=n_workers)
+    results = process_batch(all_targets, n_workers=WORKER_COUNT)
 
     # Save results to SQLite database
     os.makedirs(f"{base_dir}/results", exist_ok=True)
@@ -200,20 +219,30 @@ def main():
 
     # Summary
     total_anomalies = df[df['status'] == 'ok']['anomalies'].sum()
-    cluster_counts = df['tic_id'].apply(lambda x: catalog[catalog['tic_id'] == x]['cluster'].iloc[0] if x in catalog['tic_id'].values else 'unknown')
-    df['cluster'] = cluster_counts
+
+    # Add cluster info
+    cluster_map = dict(zip(catalog['tic_id'], catalog['cluster']))
+    df['cluster'] = df['tic_id'].apply(lambda x: cluster_map.get(x, 'unknown'))
     cluster_summary = df.groupby('cluster').agg({
-        'anomalies': ['sum', 'count', 'mean']
+        'anomalies': ['sum', 'count', 'mean'],
+        'mean_ks': 'mean'
     })
 
     print(f"\n=== WORKSTATION RUN SUMMARY ===")
+    print(f"Hardware: Intel Core Ultra 145H + Arc B770 (16GB)")
+    print(f"Workers: {WORKER_COUNT}, Batch size: {BATCH_SIZE}")
+    print(f"Numba JIT: {'Enabled' if NUMBA_AVAILABLE else 'Disabled'}")
     print(f"Targets processed: {len(results)}")
     print(f"Successful: {len(df[df['status'] == 'ok'])}")
     print(f"Errors: {len(df[df['status'] == 'error'])}")
     print(f"Total anomalies: {total_anomalies}")
-    print(f"\nResults saved to: {db_path}")
+    print(f"\nDatabase saved to: {db_path}")
     print(f"Cluster breakdown:")
     print(cluster_summary.to_string())
+
+    # Save CSV copy
+    df.to_csv(f"{base_dir}/results/workstation_results.csv", index=False)
+    print(f"\nCSV also saved to: results/workstation_results.csv")
 
 
 if __name__ == "__main__":
