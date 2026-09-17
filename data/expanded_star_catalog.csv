@@ -1,17 +1,25 @@
-tic_id,name,ra_deg,dec_deg,distance_pc,age_myr,tmag,cluster,priority,role,known_anomalies,burst_count,sector,status
-261136679,Member_D,56.12514384607833,24.14262851599285,44.4,115,12.0,Pleiades,2,switch_node,24,24,11,validated
-261136674,Maia,56.101201651800295,24.212789475002918,44.4,115,13.0,Pleiades,2,sender_node,4,4,11,validated
-20364456,Hyades_Primary,67.92507790499857,21.999822993688973,46.2,600,11.0,Hyades,2,bright_standard,-1,-1,11,pending
-231844178,Member_B,56.00040749773237,24.138527927719764,44.4,115,11.0,Pleiades,1,passive_node,0,0,11,validated
-393928046,Member_C,56.11611927665545,24.173026837719878,44.4,115,10.0,Pleiades,1,quiescent_node,0,0,11,validated
-430314373,Hyades_6,68.06520847698044,21.961065251094382,46.2,600,13.0,Hyades,1,control_node,-1,-1,11,pending
-50746789,OrionOB1_48,82.97131223338444,-5.027106992567936,135.0,3,13.0,OrionOB1,1,young_ob_star,-1,-1,11,pending
-348639169,Pleiades_17,56.140622702775296,24.070871723166128,44.4,115,9.0,Pleiades,1,candidate_node,-1,-1,11,pending
-640613235,Pleiades_16,56.009036443470144,24.04665525211054,44.4,115,13.0,Pleiades,1,candidate_node,-1,-1,11,pending
-17338297,Taurus_9,66.02595657803883,23.92178482469322,140.0,2,13.0,Taurus,1,young_star,-1,-1,11,pending
-430314368,Hyades_42,67.97897587106075,22.08335794549458,46.2,600,12.0,Hyades,0,control_node,-1,-1,11,pending
-640613236,Pleiades_19,56.13723806182223,24.04868632848681,44.4,115,12.0,Pleiades,0,candidate_node,-1,-1,11,pending
-348639155,Pleiades_44,56.04400178060987,24.214711392928866,44.4,115,11.0,Pleiades,0,candidate_node,-1,-1,11,pending
-348639162,Pleiades_8,56.01914653313339,24.18075358046672,44.4,115,10.0,Pleiades,0,candidate_node,-1,-1,11,pending
-405483952,Pleiades_25,56.01244811175373,24.124284892315007,44.4,115,9.0,Pleiades,0,candidate_node,-1,-1,11,pending
-58545474,Taurus_28,65.95063591530447,24.09443625794662,140.0,2,12.0,Taurus,0,young_star,-1,-1,11,pending
+tic_id,name,ra_deg,dec_deg,distance_pc,age_myr,tmag,priority,role,known_anomalies,status,cluster,sector,burst_count,window_size,injection_depth_floor
+261136674,Maia,56.0807,24.1345,136.2,115,7.0,2,sender_node,4,validated,Pleiades,11,4,150,0.01
+261136679,Member_D,56.0364,24.1261,136.2,115,7.5,2,switch_node,24,validated,Pleiades,11,24,150,0.01
+231844178,Member_B,56.0192,24.1045,136.2,115,8.0,1,passive_node,0,validated,Pleiades,11,0,150,0.01
+393928046,Member_C,56.0753,24.1089,136.2,115,8.5,1,quiescent_node,0,validated,Pleiades,11,0,150,0.01
+348639169,Pleiades_17,56.0253,24.0731,136.2,115,10.2,1,candidate_node,17,validated,Pleiades,11,17,150,0.01
+348639155,Pleiades_44,56.1008,24.1132,136.2,115,8.6,0,candidate_node,5,validated,Pleiades,11,5,150,0.01
+348639162,Pleiades_8,56.0193,24.1217,136.2,115,13.5,0,candidate_node,-1,pending,Pleiades,11,-1,150,0.01
+640613235,Pleiades_16,56.0609,24.1021,136.2,115,10.2,1,candidate_node,17,validated,Pleiades,11,17,150,0.01
+640613236,Pleiades_19,56.0611,24.1016,136.2,115,10.4,0,candidate_node,19,validated,Pleiades,11,19,150,0.01
+405483952,Pleiades_25,56.0135,24.1318,136.2,115,12.7,0,candidate_node,-1,pending,Pleiades,11,-1,150,0.01
+430314373,Hyades_6,67.0061,22.0068,46.4,600,11.5,1,control_node,3,validated,Hyades,11,3,150,0.01
+430314368,Hyades_42,67.9986,22.0275,46.4,600,13.8,0,control_node,16,validated,Hyades,11,16,150,0.01
+20364456,Hyades_Primary,68.9804,22.0145,46.4,600,4.4,2,bright_standard,-1,pending,Hyades,11,-1,150,0.01
+23374392,Hyades_Vega-like,69.4251,21.9977,46.4,600,4.4,2,bright_standard,-1,pending,Hyades,11,-1,150,0.01
+23426822,Hyades_Calcium-strong,69.9283,22.0479,46.4,600,7.2,2,bright_standard,-1,pending,Hyades,11,-1,150,0.01
+17338297,Taurus_9,65.9927,23.9851,140.0,2,10.2,1,young_star,0,validated,Taurus,11,0,150,0.01
+58545474,Taurus_28,66.0021,24.0139,140.0,2,13.7,0,young_star,0,validated,Taurus,11,0,150,0.01
+29825844,Taurus_DH_Tau,65.9285,24.0079,122.0,2,8.5,2,classical_tt_star,-1,pending,Taurus,11,-1,150,0.01
+30822664,Taurus_GG_Tau,65.9256,23.9302,140.0,2,9.8,2,classical_tt_star,-1,pending,Taurus,11,-1,150,0.01
+31037210,Taurus_V380_Tau,65.9288,24.0045,130.0,2,10.5,2,classical_tt_star,-1,pending,Taurus,11,-1,150,0.01
+50746789,OrionOB1_48,83.0146,-5.0347,400.0,3,10.9,1,young_ob_star,2,validated,Orion OB1,11,2,150,0.01
+21845434,OrionOB1_NGC_2244,97.8775,-3.222,1500.0,1,6.5,2,young_ob_star,-1,pending,Orion OB1,11,-1,150,0.01
+22343832,OrionOB1_Kappa_Chan,97.9125,-3.2785,1500.0,1,7.2,2,young_ob_star,-1,pending,Orion OB1,11,-1,150,0.01
+25083706,OrionOB1_25Orionis,84.0529,-5.2534,315.0,3,8.8,2,young_ob_star,-1,pending,Orion OB1,11,-1,150,0.01

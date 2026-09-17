@@ -1,0 +1,25 @@
+tic_id,name,cluster,priority,sector,tmag
+261136679,Member_D,Pleiades,2,11,7.5
+261136674,Maia,Pleiades,2,11,7.0
+20364456,Hyades_Primary,Hyades,2,11,4.4
+23374392,Hyades_Vega-like,Hyades,2,11,4.4
+23426822,Hyades_Calcium-strong,Hyades,2,11,7.2
+29825844,Taurus_DH_Tau,Taurus,2,11,8.5
+30822664,Taurus_GG_Tau,Taurus,2,11,9.8
+31037210,Taurus_V380_Tau,Taurus,2,11,10.5
+21845434,OrionOB1_NGC_2244,Orion OB1,2,11,6.5
+22343832,OrionOB1_Kappa_Chan,Orion OB1,2,11,7.2
+25083706,OrionOB1_25Orionis,Orion OB1,2,11,8.8
+348639169,Pleiades_17,Pleiades,1,11,10.2
+640613235,Pleiades_16,Pleiades,1,11,10.2
+430314373,Hyades_6,Hyades,1,11,11.5
+50746789,OrionOB1_48,Orion OB1,1,11,10.9
+231844178,Member_B,Pleiades,1,11,8.0
+393928046,Member_C,Pleiades,1,11,8.5
+17338297,Taurus_9,Taurus,1,11,10.2
+640613236,Pleiades_19,Pleiades,0,11,10.4
+430314368,Hyades_42,Hyades,0,11,13.8
+348639155,Pleiades_44,Pleiades,0,11,8.6
+58545474,Taurus_28,Taurus,0,11,13.7
+348639162,Pleiades_8,Pleiades,0,11,13.5
+405483952,Pleiades_25,Pleiades,0,11,12.7
