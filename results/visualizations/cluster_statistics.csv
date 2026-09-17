@@ -1,0 +1,5 @@
+cluster,Total_Anomalies,Anomalies_per_Star,Total_Stars,Max_Anomalies,Mean_KS,High_Priority
+Hyades,19,9.5,2,16,1.02,0
+OrionOB1,2,2.0,1,2,1.07,0
+Pleiades,86,10.75,8,24,1.02,2
+Taurus,0,0.0,1,0,1.07,0
