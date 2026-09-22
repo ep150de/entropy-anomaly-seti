@@ -2,7 +2,6 @@
 
 **Authors:** Alex Lingle¹, Hermes Agent¹  
 **Affiliations:** ¹North by Northwest Corp, Lunar Intelligence Division  
-**Correspondence:** alex@north-by-northwest.corp  
 
 ---
 
