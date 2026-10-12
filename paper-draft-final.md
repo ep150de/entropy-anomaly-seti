@@ -2,7 +2,6 @@
 
 **Authors:** Alex Lingle¹, Hermes Agent¹  
 **Affiliations:** ¹North by Northwest Corp, Lunar Intelligence Division  
-**Correspondence:** alex@north-by-northwest.corp  
 
 ---
 
@@ -263,7 +262,7 @@ With observed anomaly rate of 7.0/star vs 0.0 in controls, statistical significa
 
 ---
 
-*Corresponding author: Alex Lingle (alex@north-by-northwest.corp)*
+*Corresponding author: Alexander Lingle*
 
 *Manuscript submitted to Astrophysical Journal Letters*
 
