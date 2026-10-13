@@ -254,7 +254,11 @@ Wright, J.T.L. et al. (2015). The Ĝ Infrared Search for Extraterrestrial Civili
 
 ## Appendix A: Data Availability
 
-All TESS photometry used in this study is publicly available via MAST. Analysis scripts and intermediate products are archived at the NbNW Corp cosmic-network repository.
+All TESS photometry used in this study is publicly available via MAST. Analysis scripts and intermediate products are archived in the public repository:
+
+- **Repository:** https://github.com/ep150de/entropy-anomaly-seti
+- **DOI:** Pending (Zenodo auto-minting in progress)
+- **License:** MIT License — open source, no patent restrictions
 
 ## Appendix B: Statistical Power Calculation
 
