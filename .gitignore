@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/*.db
+results/*.db
+venv*/
+temp_html.html
+.venv/
