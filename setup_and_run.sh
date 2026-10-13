@@ -236,7 +236,8 @@ def process_batch(tic_list, n_workers=12):
 
 def main():
     # Load expanded catalog
-    catalog = pd.read_csv(f"{os.path.dirname(__file__)}/../expanded_star_catalog.csv")
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    catalog = pd.read_csv(f"{base_dir}/data/expanded_star_catalog.csv")
     
     # Prioritize targets
     high_priority = catalog[catalog['priority'] >= 2]['tic_id'].tolist()
