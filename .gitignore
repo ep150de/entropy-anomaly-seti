@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
-data/*.db
-results/*.db
+*.db
 venv*/
-temp_html.html
 .venv/
+temp_html.html
+.cache/
+results/workstation_run_*.db
+darpa-classified-summary.md
+*.log
