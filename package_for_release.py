@@ -9,7 +9,7 @@ import tarfile
 import hashlib
 from datetime import datetime
 
-RESEARCH_DIR = "/home/lingleblater/north-by-northwest-corp/entropy-anomaly-seti"
+RESEARCH_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASE_DIR = os.path.join(RESEARCH_DIR, "releases")
 VERSION = "v1.0"
 

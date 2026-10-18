@@ -7,7 +7,8 @@ Creates a .ipynb file ready for upload to Google Colab.
 import json
 import os
 
-NOTEBOOK_PATH = "/home/lingleblater/north-by-northwest-corp/entropy-anomaly-seti/colab_entropy_analysis.ipynb"
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NOTEBOOK_PATH = f"{base_dir}/colab_entropy_analysis.ipynb"
 
 NOTEBOOK = {
     "cells": [
@@ -104,8 +105,7 @@ NOTEBOOK = {
                 "        if d_max == d_min:\n",
                 "            return 0.0\n",
                 "        bin_width = (d_max - d_min) / num_bins\n",
-                "        for i in range(len(data)):
-",
+                "        for i in range(len(data)):\n",
                 "            idx = min(int((data[i] - d_min) / bin_width), num_bins - 1)\n",
                 "            hist[idx] += 1\n",
                 "        probs = hist / len(data)\n",

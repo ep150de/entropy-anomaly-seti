@@ -5,6 +5,7 @@ Uses direct TIC targeting to avoid slow region searches
 """
 import numpy as np
 import pandas as pd
+import os
 import lightkurve as lk
 import zlib
 import time
@@ -117,14 +118,15 @@ print("=" * 70)
 results_df = pd.DataFrame(results)
 print(results_df.to_string(index=False))
 
-results_df.to_csv("/home/lingleblater/.hermes/hermes-agent/control_cluster_results.csv", index=False)
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+results_df.to_csv(f"{base_dir}/data/control_cluster_results.csv", index=False)
 print(f"\nSaved to control_cluster_results.csv")
 
 # Compare to Pleiades
 print("\n[COMPARISON] Control Clusters vs. Pleiades")
 print("=" * 70)
 try:
-    pleiades_df = pd.read_csv("/home/lingleblater/.hermes/hermes-agent/cluster_star_summary.csv")
+    pleiades_df = pd.read_csv(f"{base_dir}/data/pleiades_full_targets.csv")
     pleiades_anom_per_star = pleiades_df['Anomaly_Count'].sum() / len(pleiades_df)
     pleiades_mean_ks = pleiades_df['Mean_KS'].mean()
     

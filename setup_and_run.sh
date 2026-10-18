@@ -15,6 +15,9 @@ echo "============================================================"
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$WORK_DIR" || exit 1
 
+# Ensure required directories exist
+mkdir -p "$WORK_DIR/results" "$WORK_DIR/data" "$WORK_DIR/pipeline"
+
 echo "[1/5] Checking system resources..."
 CPU_CORES=$(nproc)
 TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')

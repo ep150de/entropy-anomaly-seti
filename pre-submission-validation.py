@@ -9,7 +9,7 @@ import os
 import re
 import sys
 
-SUBMISSION_DIR = "/home/lingleblater/north-by-northwest-corp/entropy-anomaly-seti"
+SUBMISSION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def check_file_exists(filename):
     path = os.path.join(SUBMISSION_DIR, filename)
