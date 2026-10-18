@@ -144,25 +144,7 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
         import lightkurve as lk
         
         cache_file = f"/tmp/tess_cache_{tic_id}_s{sector}.npy"
-        
-        # Check cache first (NVMe SSD will be used for /tmp)
-        if save_cache and os.path.exists(cache_file):
-            try:
-                flux_data = np.load(cache_file, allow_pickle=True)
-                if len(flux_data) > 0:
-                    pass  # cache valid
-                else:
-                    os.remove(cache_file)
-                    flux_data = None
-            except Exception:
-                # Corrupt cache file - remove and re-download
-                try:
-                    os.remove(cache_file)
-                except OSError:
-                    pass
-                flux_data = None
-        else:
-            flux_data = None
+        flux_data = None  # Always download fresh (cache disabled for numba compat)
         
         if flux_data is None:
             # Try specified sector first, then search all available
@@ -248,8 +230,8 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
             return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 
                     'mean_ks': 0.0, 'sector_tried': sector, 'error': 'No TESS data found in any sector'}
         
-        if save_cache:
-            np.save(cache_file, flux_data, allow_pickle=True)
+        # Skip cache save - numba compatibility issue with np.save in multiprocessing
+        pass
         
         # Compute entropy metrics
         from scipy.stats import ks_1samp
