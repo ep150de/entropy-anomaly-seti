@@ -147,15 +147,63 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
         
         # Check cache first (NVMe SSD will be used for /tmp)
         if save_cache and os.path.exists(cache_file):
-            flux_data = np.load(cache_file, allow_pickle=True)
+            try:
+                flux_data = np.load(cache_file, allow_pickle=True)
+                if len(flux_data) > 0:
+                    pass  # cache valid
+                else:
+                    os.remove(cache_file)
+                    flux_data = None
+            except Exception:
+                # Corrupt cache file - remove and re-download
+                try:
+                    os.remove(cache_file)
+                except OSError:
+                    pass
+                flux_data = None
         else:
-            # Download TESS data
-            search = lk.search_lightcurve(f"TIC {tic_id}", sector=sector)
-            if len(search) == 0:
-                return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 'mean_ks': 0.0}
+            flux_data = None
+        
+        if flux_data is None:
+            # Try specified sector first, then search all available
+            sectors_to_try = [sector] + [s for s in range(1, 70) if s != sector]
+            found_data = False
             
-            lc = search.download_all().PLD()
-            flux_data = lc.flatten(window_size=101).remove_outliers().flux.value
+            for try_sector in sectors_to_try[:5]:  # Limit to 5 sectors to avoid long waits
+                try:
+                    search = lk.search_lightcurve(f"TIC {tic_id}", sector=try_sector)
+                    if len(search) == 0:
+                        continue
+                    
+                    # Try PLD first, fall back to SAP
+                    try:
+                        lc_collection = search.download_all()
+                        if hasattr(lc_collection, 'PLD'):
+                            lc = lc_collection.PLD()
+                        elif hasattr(lc_collection, 'SAP_FLUX'):
+                            lc = lc_collection.SAP_FLUX
+                        else:
+                            # Try to get first lightcurve
+                            lc = lc_collection[0]
+                            if hasattr(lc, 'PDCSAP_FLUX'):
+                                lc = lc.PDCSAP_FLUX
+                            elif hasattr(lc, 'SAP_FLUX'):
+                                lc = lc.SAP_FLUX
+                    except AttributeError:
+                        # Fallback: use first available lightcurve
+                        lc_collection = search.download_all()
+                        lc = lc_collection[0]
+                    
+                    flux_data = lc.flatten(window_size=101).remove_outliers().flux.value
+                    found_data = True
+                    sector = try_sector
+                    break
+                except Exception as e:
+                    continue
+            
+            if not found_data or flux_data is None:
+                return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 
+                        'mean_ks': 0.0, 'sector_tried': sector, 'error': 'No TESS data found in any sector'}
             
             if save_cache:
                 np.save(cache_file, flux_data, allow_pickle=True)
@@ -166,6 +214,9 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
         n_cadences = len(flux_data)
         if n_cadences < window_size:
             window_size = min(100, n_cadences // 2)
+            if window_size < 10:
+                return {'tic_id': tic_id, 'status': 'insufficient_data', 'anomalies': 0,
+                        'mean_ks': 0.0, 'cadences': n_cadences}
         
         n_windows = max(1, n_cadences // window_size)
         
@@ -204,10 +255,11 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
             'std_ks': float(std_ks),
             'threshold': float(threshold),
             'is_anomalous': is_anomalous,
-            'processing_time': 0.0
+            'processing_time': 0.0,
+            'sector': sector
         }
     except Exception as e:
-        return {'tic_id': tic_id, 'status': 'error', 'error': str(e), 'anomalies': 0}
+        return {'tic_id': tic_id, 'status': 'error', 'error': str(e)[:200], 'anomalies': 0}
 
 
 def process_batch(tic_list, n_workers=12):
@@ -242,10 +294,18 @@ def main():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     catalog = pd.read_csv(f"{base_dir}/data/expanded_star_catalog.csv")
     
-    # Prioritize targets
-    high_priority = catalog[catalog['priority'] >= 2]['tic_id'].tolist()
-    medium_priority = catalog[catalog['priority'] == 1]['tic_id'].tolist()
-    all_targets = high_priority + medium_priority
+    # Prioritize targets and get their sectors
+    high_priority = catalog[catalog['priority'] >= 2]
+    medium_priority = catalog[catalog['priority'] == 1]
+    
+    all_targets = []
+    target_sectors = {}
+    for _, row in high_priority.iterrows():
+        all_targets.append(row['tic_id'])
+        target_sectors[row['tic_id']] = int(row.get('sector', 11))
+    for _, row in medium_priority.iterrows():
+        all_targets.append(row['tic_id'])
+        target_sectors[row['tic_id']] = int(row.get('sector', 11))
     
     print(f"Loaded {len(all_targets)} targets from catalog")
     print(f"High priority: {len(high_priority)}")
@@ -255,11 +315,33 @@ def main():
     # 64GB RAM / 2GB per worker = 32 workers max, but limit to 12 for safety
     n_workers = min(12, os.cpu_count() or 8)
     
-    # Execute parallel processing
-    results = process_batch(all_targets, n_workers=n_workers)
+    # Execute parallel processing with sectors
+    # Modified process_batch to accept sector mapping
+    results = []
+    total = len(all_targets)
+    start_time = time.time()
+    
+    print(f"Processing {total} targets with {n_workers} workers...")
+    
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(process_single_star, tic, sector=target_sectors.get(tic, 11)): tic for tic in all_targets}
+        
+        for i, future in enumerate(as_completed(futures), 1):
+            result = future.result()
+            results.append(result)
+            
+            elapsed = time.time() - start_time
+            rate = i / elapsed * 60 if elapsed > 0 else 0
+            remaining = (total - i) / rate if rate > 0 else 0
+            
+            status_icon = "⚡" if result.get('anomalies', 0) > 5 else "  "
+            error_msg = f" [{str(result.get('error', ''))[:40]}]" if result.get('status') in ('error', 'no_data') else ""
+            print(f"  [{i}/{total}] {status_icon} TIC {result['tic_id']}: "
+                  f"{result.get('anomalies', 0)} anomalies | "
+                  f"ETA: {remaining:.1f} min{error_msg}")
     
     # Save results to SQLite database
-    db_path = f"{os.path.dirname(__file__)}/../results/workstation_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    db_path = f"{base_dir}/results/workstation_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     conn = sqlite3.connect(db_path)
     
     df = pd.DataFrame(results)
@@ -275,7 +357,9 @@ def main():
     
     print(f"\n=== WORKSTATION RUN SUMMARY ===")
     print(f"Targets processed: {len(results)}")
-    print(f"Successful: {len(df[df['status'] == 'ok'])}")
+    print(f"Successful (ok): {len(df[df['status'] == 'ok'])}")
+    print(f"No data: {len(df[df['status'] == 'no_data'])}")
+    print(f"Insufficient data: {len(df[df['status'] == 'insufficient_data'])}")
     print(f"Errors: {len(df[df['status'] == 'error'])}")
     print(f"Total anomalies: {total_anomalies}")
     print(f"\nResults saved to: {db_path}")
