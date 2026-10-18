@@ -171,34 +171,75 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
             
             for try_sector in sectors_to_try[:5]:  # Limit to 5 sectors to avoid long waits
                 try:
+                    # First try: search with specific sector
                     search = lk.search_lightcurve(f"TIC {tic_id}", sector=try_sector)
+                    if len(search) == 0:
+                        # Try without sector filter (all available data)
+                        try:
+                            search = lk.search_lightcurve(f"TIC {tic_id}")
+                            if len(search) > 0:
+                                # Filter to this sector if possible
+                                sector_results = [r for r in search if try_sector in str(r)]
+                                if sector_results:
+                                    search = sector_results
+                        except Exception:
+                            continue
                     if len(search) == 0:
                         continue
                     
-                    # Try PLD first, fall back to SAP
+                    # Download single lightcurve (more reliable than download_all)
                     try:
+                        lc = search.download()
+                    except Exception:
+                        # Try download_all as fallback
                         lc_collection = search.download_all()
-                        if hasattr(lc_collection, 'PLD'):
-                            lc = lc_collection.PLD()
-                        elif hasattr(lc_collection, 'SAP_FLUX'):
-                            lc = lc_collection.SAP_FLUX
-                        else:
-                            # Try to get first lightcurve
+                        if len(lc_collection) > 0:
                             lc = lc_collection[0]
-                            if hasattr(lc, 'PDCSAP_FLUX'):
-                                lc = lc.PDCSAP_FLUX
-                            elif hasattr(lc, 'SAP_FLUX'):
-                                lc = lc.SAP_FLUX
-                    except AttributeError:
-                        # Fallback: use first available lightcurve
-                        lc_collection = search.download_all()
-                        lc = lc_collection[0]
+                        else:
+                            continue
                     
-                    flux_data = lc.flatten(window_size=101).remove_outliers().flux.value
-                    found_data = True
-                    sector = try_sector
-                    break
+                    # Get flux data - try PDCSAP, then SAP, then raw
+                    flux_data = None
+                    if hasattr(lc, 'PDCSAP_FLUX'):
+                        try:
+                            flux_data = lc.PDCSAP_FLUX.flatten(window_size=101).remove_outliers().flux.value
+                        except Exception:
+                            pass
+                    if flux_data is None and hasattr(lc, 'SAP_FLUX'):
+                        try:
+                            flux_data = lc.SAP_FLUX.flatten(window_size=101).remove_outliers().flux.value
+                        except Exception:
+                            pass
+                    if flux_data is None:
+                        try:
+                            flux_data = lc.flatten(window_size=101).remove_outliers().flux.value
+                        except Exception:
+                            pass
+                    if flux_data is None:
+                        try:
+                            flux_data = lc.flux.value
+                        except Exception:
+                            pass
+                    
+                    if flux_data is not None and len(flux_data) > 100:
+                        found_data = True
+                        sector = try_sector
+                        break
                 except Exception as e:
+                    continue
+            # If no 2-min data found, try FFI-based extraction
+            if flux_data is None:
+                try:
+                    from lightkurve import search_tesscut
+                    tpf = search_tesscut(f"TIC {tic_id}", sector=try_sector).download(cutout_size=10)
+                    if tpf is not None:
+                        lc = tpf.to_lightcurve(aperture_mask='threshold')
+                        flux_data = lc.flux.value
+                        if len(flux_data) > 100:
+                            found_data = True
+                            sector = try_sector
+                            break
+                except Exception:
                     continue
             
             if not found_data or flux_data is None:
