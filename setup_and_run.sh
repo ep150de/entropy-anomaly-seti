@@ -12,7 +12,7 @@ echo "  Workstation Edition - Single Script Setup + Execution"
 echo "============================================================"
 
 # --- ENVIRONMENT ---
-WORK_DIR="$HOME/north-by-northwest-corp/entropy-anomaly-seti"
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$WORK_DIR" || exit 1
 
 echo "[1/5] Checking system resources..."
