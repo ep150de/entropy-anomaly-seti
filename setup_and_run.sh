@@ -170,6 +170,8 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
             found_data = False
             
             for try_sector in sectors_to_try[:5]:  # Limit to 5 sectors to avoid long waits
+                if found_data:
+                    break
                 try:
                     # First try: search with specific sector
                     search = lk.search_lightcurve(f"TIC {tic_id}", sector=try_sector)
@@ -238,16 +240,16 @@ def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
                         if len(flux_data) > 100:
                             found_data = True
                             sector = try_sector
-                            break
                 except Exception:
-                    continue
+                    pass
             
-            if not found_data or flux_data is None:
-                return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 
-                        'mean_ks': 0.0, 'sector_tried': sector, 'error': 'No TESS data found in any sector'}
-            
-            if save_cache:
-                np.save(cache_file, flux_data, allow_pickle=True)
+        # After all sectors tried
+        if not found_data or flux_data is None:
+            return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 
+                    'mean_ks': 0.0, 'sector_tried': sector, 'error': 'No TESS data found in any sector'}
+        
+        if save_cache:
+            np.save(cache_file, flux_data, allow_pickle=True)
         
         # Compute entropy metrics
         from scipy.stats import ks_1samp
