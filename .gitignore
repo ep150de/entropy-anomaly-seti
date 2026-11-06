@@ -6,5 +6,9 @@ venv*/
 temp_html.html
 .cache/
 results/workstation_run_*.db
+results/latest_report.txt
 darpa-classified-summary.md
 *.log
+*.webm
+*.mp4
+"Screen recording"*
