@@ -1,0 +1,18 @@
+WORKSTATION PIPELINE EXECUTION REPORT
+=====================================
+Generated: $(date)
+
+System Configuration:
+  CPU: $(nproc) cores
+  RAM: $(free -h | awk '/^Mem:/{print $2}') 
+  GPU: $(lshw -C display 2>/dev/null | grep "product:" | head -1)
+  Disk: $(df -h / | tail -1 | awk '{print $4}') free
+
+Pipeline Settings:
+  Parallel Workers: 12
+  Window Size: 150 samples
+  JIT Acceleration: Numba enabled
+
+Results:
+  See results/workstation_run_*.db for full dataset
+  Cluster summaries generated automatically

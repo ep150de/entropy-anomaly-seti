@@ -1,248 +1,330 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 """
-Optimized Parallel Pipeline for Intel Arc B770 Workstation
-Hardware: Core Ultra 145H (14C/20T), Arc B770 (16GB VRAM), 32GB RAM
+Entropy Anomaly SETI - Workstation Pipeline (clean standalone runner)
+
+Design notes
+------------
+* Pure numpy/scipy. NO numba (it caused "no implementation found for
+  'numpy.save'" errors inside multiprocessing workers and gave no benefit
+  here -- WSL does not expose the Arc GPU to lightkurve).
+* NO np.save/np.load caching (numba + pickling conflict).
+* The KS statistic is DATA-DEPENDENT (KS test of each window against a
+  normal distribution). The previous JIT version sorted the flux and then
+  ignored it, returning a constant ~1/sqrt(n) for every window, which is
+  why every target reported 0 anomalies.
+* ThreadPoolExecutor: TESS downloads are I/O-bound, threads avoid the
+  pickling/spawn problems of ProcessPool on WSL/Windows.
+* setup_and_run.sh no longer GENERATES this file via heredoc. It is a
+  committed, syntax-checked source file. That removes the whole class of
+  "break outside loop" / indentation bugs from earlier attempts.
+
+Usage
+-----
+  python3 pipeline/workstation_runner.py                 # full 18-target run
+  python3 pipeline/workstation_runner.py --test         # 2 targets, verbose
+  python3 pipeline/workstation_runner.py --verbose      # full run, verbose
+  python3 pipeline/workstation_runner.py --sector 11    # override sector
+  python3 pipeline/workstation_runner.py --workers 8
 """
 
 import os
 import sys
 import time
 import sqlite3
+import argparse
+import warnings
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from scipy.special import ndtr  # vectorized standard-normal CDF
 
-# Optimize numba
-try:
-    import numba
-    from numba import jit, njit
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
+warnings.filterwarnings("ignore")
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # ===================================================================
-# HARDWARE-SPECIFIC OPTIMIZATION
+# METRICS (pure numpy / scipy -- data dependent)
 # ===================================================================
-CPU_CORES = 14  # Intel Core Ultra 145H
-WORKER_COUNT = 14  # One per CPU core
-BATCH_SIZE = 5  # Stars per batch to reduce MAST API overhead
-MAX_MEMORY_GB = 25  # Leave 7GB headroom for OS/GPU driver
+def ks_ratio(window):
+    """KS statistic of a window against N(0,1) after z-scoring, scaled by sqrt(n).
+
+    A window whose flux distribution is close to Gaussian yields a small value;
+    structured / non-Gaussian (information-bearing) windows yield a large one.
+    """
+    x = np.asarray(window, dtype=float)
+    x = x[np.isfinite(x)]
+    n = len(x)
+    if n < 10:
+        return 0.0
+    mu = x.mean()
+    sigma = x.std()
+    if sigma <= 0 or not np.isfinite(sigma):
+        return 0.0
+    z = np.sort((x - mu) / sigma)
+    cdf_theory = ndtr(z)
+    cdf_empirical = np.arange(1, n + 1) / n
+    ks = np.max(np.abs(cdf_empirical - cdf_theory))
+    return float(ks * np.sqrt(n))
+
+
+def shannon_entropy(window, num_bins=50):
+    """Shannon entropy (bits) of the window's value distribution."""
+    x = np.asarray(window, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < 2:
+        return 0.0
+    hist, _ = np.histogram(x, bins=num_bins)
+    probs = hist[hist > 0].astype(float)
+    probs /= probs.sum()
+    return float(-np.sum(probs * np.log2(probs)))
+
 
 # ===================================================================
-# JIT-OPTIMIZED ENTROPY COMPUTATIONS
+# DATA ACQUISITION (lightkurve, robust across 2.x versions)
 # ===================================================================
-if NUMBA_AVAILABLE:
-    @njit(fastmath=True, parallel=False, cache=True)
-    def _ks_ratio_fast(flux):
-        """JIT-compiled KS ratio computation - 15x faster via Numba"""
-        n = len(flux)
-        if n < 10:
-            return 0.0
-        flux_sorted = np.sort(flux)
-        cdf_theory = np.linspace(0, 1, n)
-        cdf_empirical = np.arange(1, n + 1) / n
-        ks_stat = np.max(np.abs(cdf_empirical - cdf_theory))
-        return float(ks_stat * np.sqrt(n))
-
-    @njit(fastmath=True, cache=True)
-    def _entropy_fast(data, num_bins=50):
-        """JIT-compiled Shannon entropy calculation"""
-        hist = np.zeros(num_bins)
-        min_val = np.min(data)
-        max_val = np.max(data)
-        bin_width = (max_val - min_val) / num_bins if max_val > min_val else 1.0
-
-        for i in range(len(data)):
-            bin_idx = int((data[i] - min_val) / bin_width)
-            if bin_idx >= num_bins:
-                bin_idx = num_bins - 1
-            if bin_idx < 0:
-                bin_idx = 0
-            hist[bin_idx] += 1
-
-        total = len(data)
-        probs = hist / total
-        entropy = 0.0
-        for i in range(num_bins):
-            if probs[i] > 0:
-                entropy -= probs[i] * np.log2(probs[i])
-        return float(entropy)
-else:
-    def _ks_ratio_fast(flux):
-        from scipy.stats import ks_1samp
-        return float(ks_1samp(flux, 'norm').statistic * np.sqrt(len(flux)))
-
-    def _entropy_fast(data, num_bins=50):
-        hist, _ = np.histogram(data, bins=num_bins, density=True)
-        probs = hist * np.diff(np.histogram(data, bins=num_bins)[1])
-        probs = probs[probs > 0]
-        return float(-np.sum(probs * np.log2(probs)))
+def _flux_from_lightcurve(lc):
+    """Extract a clean float array from a LightCurve object."""
+    colnames = [str(c).lower() for c in lc.colnames]
+    arr = None
+    for candidate in ("pdcsap_flux", "sap_flux", "flux"):
+        if candidate in colnames:
+            col = lc.colnames[colnames.index(candidate)]
+            try:
+                arr = np.asarray(lc[col].value, dtype=float)
+            except Exception:
+                try:
+                    arr = np.asarray(lc[col], dtype=float)
+                except Exception:
+                    arr = None
+            if arr is not None:
+                break
+    if arr is None:
+        arr = np.asarray(lc.flux.value, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) < 100:
+        return None
+    # Mild sigma-clip to remove cosmic-ray outliers (keep structure intact)
+    med = np.median(arr)
+    mad = np.median(np.abs(arr - med)) + 1e-12
+    keep = np.abs(arr - med) < 8 * 1.4826 * mad
+    arr = arr[keep]
+    if len(arr) < 100:
+        return None
+    # Normalize (anomaly metric is scale-free)
+    arr = arr / np.median(arr)
+    return arr
 
 
-def process_single_star(tic_id, sector=11, window_size=150, save_cache=True):
-    """Process a single TIC target with optimized pipeline"""
-    try:
-        import lightkurve as lk
+def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
+    """Download a TESS light curve for a TIC id. Returns (flux_array, sector, source)."""
+    import lightkurve as lk
 
-        cache_file = f"/tmp/tess_cache_{tic_id}_s{sector}.npy"
+    def log(*a):
+        if verbose:
+            print("      ", *a, flush=True)
 
-        # Check cache first
-        if save_cache and os.path.exists(cache_file):
-            flux_data = np.load(cache_file, allow_pickle=True)
-        else:
-            # Download TESS data
-            search = lk.search_lightcurve(f"TIC {tic_id}", sector=sector)
+    sectors_to_try = [sector] + [s for s in range(1, 70) if s != sector]
+
+    # ---- 1) 2-minute / 20-second cadence light curves ----
+    for try_sector in sectors_to_try[:max_sectors]:
+        try:
+            search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS", sector=try_sector)
             if len(search) == 0:
-                return {'tic_id': tic_id, 'status': 'no_data', 'anomalies': 0, 'mean_ks': 0.0}
+                search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS")
+            if len(search) == 0:
+                log(f"s{try_sector}: no lightcurve products")
+                continue
+            log(f"s{try_sector}: {len(search)} product(s)")
+            # Download all products and stitch -> more cadences, fewer gaps
+            try:
+                collection = search.download_all()
+                if len(collection) == 0:
+                    continue
+                lc = collection.stitch() if hasattr(collection, "stitch") else collection[0]
+            except Exception:
+                lc = search.download()
+            arr = _flux_from_lightcurve(lc)
+            if arr is not None and len(arr) > 100:
+                return arr, try_sector, "lightcurve"
+        except Exception as e:
+            log(f"s{try_sector}: {type(e).__name__}: {str(e)[:80]}")
+            continue
 
-            lc_collection = search.download_all()
-            # Handle light curve collection
-            if hasattr(lc_collection, 'PDCSAP_FLUX'):
-                lc = lc_collection.PDCSAP_FLUX
-            elif hasattr(lc_collection, 'flux'):
-                lc = lc_collection
-            else:
-                # For single light curve case
-                lc = lc_collection.stitch()
-            
-            # Flatten and clean
-            lc = lc.remove_outliers(sigma=5).flatten(window_size=101)
-            flux_data = lc.flux.value
+    # ---- 2) FFI cutout fallback (works for any star in the TESS FOV) ----
+    log("falling back to FFI / TessCut")
+    try:
+        try:
+            from lightkurve import search_tesscut
+        except ImportError:
+            from lightkurve import TesscutClass
+            search_tesscut = TesscutClass().search
+        for try_sector in sectors_to_try[:3]:
+            try:
+                res = search_tesscut(f"TIC {tic_id}", sector=try_sector)
+                tpf = res.download(cutout_size=11)
+                if tpf is None:
+                    continue
+                try:
+                    lc = tpf.to_lightcurve(aperture_mask="threshold")
+                except Exception:
+                    mask = tpf.create_threshold_mask(threshold=3)
+                    lc = tpf.to_lightcurve(aperture_mask=mask)
+                arr = _flux_from_lightcurve(lc)
+                if arr is not None and len(arr) > 100:
+                    return arr, try_sector, "ffi"
+            except Exception as e:
+                log(f"ffi s{try_sector}: {type(e).__name__}: {str(e)[:80]}")
+                continue
+    except Exception as e:
+        log(f"ffi unavailable: {type(e).__name__}: {str(e)[:80]}")
 
-            if save_cache:
-                np.save(cache_file, flux_data, allow_pickle=True)
+    return None, sector, "none"
 
-        # Compute entropy metrics
-        n_cadences = len(flux_data)
-        if n_cadences < window_size:
-            window_size = min(100, n_cadences // 2)
 
-        n_windows = max(1, n_cadences // window_size)
+# ===================================================================
+# PER-TARGET ANALYSIS
+# ===================================================================
+def process_single_star(tic_id, sector=11, window_size=150, verbose=False):
+    try:
+        flux, used_sector, source = fetch_flux(tic_id, sector=sector, verbose=verbose)
+        if flux is None:
+            return {"tic_id": tic_id, "status": "no_data", "anomalies": 0,
+                    "mean_ks": 0.0, "error": "No TESS data found (lightcurve + FFI)"}
 
-        results = []
+        n_cadences = len(flux)
+        ws = window_size
+        if n_cadences < ws:
+            ws = max(10, n_cadences // 2)
+        n_windows = max(1, n_cadences // ws)
+
+        ks_vals, ent_vals = [], []
         for i in range(n_windows):
-            start = i * window_size
-            end = min(start + window_size, n_cadences)
-            window_data = flux_data[start:end]
+            w = flux[i * ws: min((i + 1) * ws, n_cadences)]
+            if len(w) < 10:
+                continue
+            ks_vals.append(ks_ratio(w))
+            ent_vals.append(shannon_entropy(w, 50))
 
-            ks_score = _ks_ratio_fast(window_data)
-            entropy = _entropy_fast(window_data, 50)
-            results.append({'ks_ratio': ks_score, 'entropy': entropy,
-                            'window_index': i, 'time_btjd': 1325 + i * (window_size / 1440)})
+        if len(ks_vals) < 5:
+            return {"tic_id": tic_id, "status": "insufficient_data", "anomalies": 0,
+                    "mean_ks": 0.0, "cadences": n_cadences}
 
-        df = pd.DataFrame(results)
-
-        if len(df) > 10:
-            mean_ks = df['ks_ratio'].mean()
-            std_ks = df['ks_ratio'].std()
-            threshold = mean_ks - 3 * std_ks
-            anomalies = int((df['ks_ratio'] < threshold).sum())
-            is_anomalous = anomalies > 0
-        else:
-            mean_ks = 0
-            std_ks = 0
-            threshold = 0
-            anomalies = 0
-            is_anomalous = False
+        ks_arr = np.asarray(ks_vals)
+        mean_ks = float(ks_arr.mean())
+        std_ks = float(ks_arr.std())
+        threshold = mean_ks - 3 * std_ks
+        anomalies = int((ks_arr < threshold).sum()) if std_ks > 0 else 0
 
         return {
-            'tic_id': tic_id,
-            'status': 'ok',
-            'cadences': n_cadences,
-            'anomalies': anomalies,
-            'mean_ks': float(mean_ks),
-            'std_ks': float(std_ks),
-            'threshold': float(threshold),
-            'is_anomalous': is_anomalous,
-            'processing_time': 0.0
+            "tic_id": tic_id,
+            "status": "ok",
+            "cadences": n_cadences,
+            "windows": len(ks_vals),
+            "anomalies": anomalies,
+            "mean_ks": mean_ks,
+            "std_ks": std_ks,
+            "threshold": float(threshold),
+            "mean_entropy": float(np.mean(ent_vals)),
+            "is_anomalous": anomalies > 0,
+            "sector": used_sector,
+            "source": source,
         }
     except Exception as e:
-        return {'tic_id': tic_id, 'status': 'error', 'error': str(e), 'anomalies': 0}
+        return {"tic_id": tic_id, "status": "error", "error": f"{type(e).__name__}: {str(e)[:180]}",
+                "anomalies": 0}
 
 
-def process_batch(tic_list, n_workers=WORKER_COUNT):
-    """Process multiple stars in parallel using ThreadPoolExecutor"""
-    results = []
-    total = len(tic_list)
-    start_time = time.time()
-
-    print(f"Processing {total} targets with {n_workers} workers...")
-    print(f"Batch size: {BATCH_SIZE}")
-    print(f"Numba JIT: {'Enabled' if NUMBA_AVAILABLE else 'Disabled (Scipy fallback)'}")
-
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(process_single_star, tic): tic for tic in tic_list}
-
-        for i, future in enumerate(as_completed(futures), 1):
-            result = future.result()
-            results.append(result)
-
-            elapsed = time.time() - start_time
-            rate = i / elapsed * 60 if elapsed > 0 else 0
-            remaining = (total - i) / rate if rate > 0 else 0
-
-            status_icon = "⚡" if result.get('anomalies', 0) > 5 else "  "
-            error_msg = f" [{str(result.get('error', ''))[:30]}]" if result.get('status') == 'error' else ""
-            print(f"  [{i}/{total}] {status_icon} TIC {result['tic_id']}: "
-                  f"{result.get('anomalies', 0)} anomalies | "
-                  f"ETA: {remaining:.1f} min{error_msg}")
-
-    return results
-
-
+# ===================================================================
+# MAIN
+# ===================================================================
 def main():
-    # Load expanded catalog
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    catalog = pd.read_csv(f"{base_dir}/data/expanded_star_catalog.csv")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--test", action="store_true", help="Process 2 targets sequentially with verbose output")
+    ap.add_argument("--verbose", action="store_true", help="Verbose per-target download logs")
+    ap.add_argument("--sector", type=int, default=None, help="Override catalog sector")
+    ap.add_argument("--workers", type=int, default=None, help="Number of parallel workers")
+    args = ap.parse_args()
 
-    # Prioritize targets
-    high_priority = catalog[catalog['priority'] >= 2]['tic_id'].tolist()
-    medium_priority = catalog[catalog['priority'] == 1]['tic_id'].tolist()
-    all_targets = high_priority + medium_priority
+    catalog_path = os.path.join(BASE_DIR, "data", "expanded_star_catalog.csv")
+    catalog = pd.read_csv(catalog_path)
 
-    print(f"Loaded {len(all_targets)} targets from catalog")
-    print(f"High priority: {len(high_priority)}")
-    print(f"Medium priority: {len(medium_priority)}")
+    high = catalog[catalog["priority"] >= 2]
+    medium = catalog[catalog["priority"] == 1]
+    ordered = pd.concat([high, medium], ignore_index=True)
 
-    # Execute parallel processing
-    results = process_batch(all_targets, n_workers=WORKER_COUNT)
+    targets = []
+    for _, row in ordered.iterrows():
+        sec = args.sector if args.sector else int(row.get("sector", 11))
+        targets.append((int(row["tic_id"]), sec))
 
-    # Save results to SQLite database
-    os.makedirs(f"{base_dir}/results", exist_ok=True)
-    db_path = f"{base_dir}/results/workstation_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-    conn = sqlite3.connect(db_path)
+    n_workers = args.workers or min(12, os.cpu_count() or 8)
 
+    if args.test:
+        targets = targets[:2]
+        n_workers = 1
+        print("=== TEST MODE: 2 targets, sequential, verbose ===\n")
+
+    print(f"Loaded {len(targets)} targets | workers={n_workers}", flush=True)
+    t0 = time.time()
+    results = []
+
+    if args.test:
+        for tic, sec in targets:
+            print(f"[TIC {tic}] sector {sec} ...", flush=True)
+            r = process_single_star(tic, sector=sec, verbose=True)
+            print(f"  -> {r}", flush=True)
+            results.append(r)
+    else:
+        print(f"Processing {len(targets)} targets with {n_workers} workers...", flush=True)
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            futs = {ex.submit(process_single_star, tic, sec, 150, args.verbose): tic
+                    for tic, sec in targets}
+            for i, fut in enumerate(as_completed(futs), 1):
+                r = fut.result()
+                results.append(r)
+                elapsed = time.time() - t0
+                rate = i / elapsed * 60 if elapsed > 0 else 0
+                remaining = (len(targets) - i) / rate if rate > 0 else 0
+                icon = "*" if r.get("anomalies", 0) > 0 else " "
+                extra = ""
+                if r.get("status") != "ok":
+                    extra = f" [{r.get('status')}: {str(r.get('error',''))[:50]}]"
+                print(f"  [{i}/{len(targets)}] {icon} TIC {r['tic_id']}: "
+                      f"{r.get('anomalies',0)} anomalies | "
+                      f"ETA {remaining:.1f} min{extra}", flush=True)
+
+    if args.test:
+        print("\n=== TEST COMPLETE ===")
+        return
+
+    # ---- Save results ----
+    os.makedirs(os.path.join(BASE_DIR, "results"), exist_ok=True)
+    db_path = os.path.join(BASE_DIR, "results",
+                           f"workstation_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
     df = pd.DataFrame(results)
-    df.to_sql('results', conn, if_exists='replace', index=False)
+    conn = sqlite3.connect(db_path)
+    df.to_sql("results", conn, if_exists="replace", index=False)
+    conn.close()
 
-    # Summary
-    total_anomalies = df[df['status'] == 'ok']['anomalies'].sum()
+    cluster_map = dict(zip(catalog["tic_id"].astype(int), catalog["cluster"]))
+    df["cluster"] = df["tic_id"].map(cluster_map).fillna("unknown")
+    total_anom = df[df["status"] == "ok"]["anomalies"].sum()
 
-    # Add cluster info
-    cluster_map = dict(zip(catalog['tic_id'], catalog['cluster']))
-    df['cluster'] = df['tic_id'].apply(lambda x: cluster_map.get(x, 'unknown'))
-    cluster_summary = df.groupby('cluster').agg({
-        'anomalies': ['sum', 'count', 'mean'],
-        'mean_ks': 'mean'
-    })
-
-    print(f"\n=== WORKSTATION RUN SUMMARY ===")
-    print(f"Hardware: Intel Core Ultra 145H + Arc B770 (16GB)")
-    print(f"Workers: {WORKER_COUNT}, Batch size: {BATCH_SIZE}")
-    print(f"Numba JIT: {'Enabled' if NUMBA_AVAILABLE else 'Disabled'}")
-    print(f"Targets processed: {len(results)}")
-    print(f"Successful: {len(df[df['status'] == 'ok'])}")
-    print(f"Errors: {len(df[df['status'] == 'error'])}")
-    print(f"Total anomalies: {total_anomalies}")
-    print(f"\nDatabase saved to: {db_path}")
-    print(f"Cluster breakdown:")
-    print(cluster_summary.to_string())
-
-    # Save CSV copy
-    df.to_csv(f"{base_dir}/results/workstation_results.csv", index=False)
-    print(f"\nCSV also saved to: results/workstation_results.csv")
+    print("\n=== WORKSTATION RUN SUMMARY ===")
+    print(f"Targets processed : {len(results)}")
+    print(f"Successful (ok)   : {len(df[df['status']=='ok'])}")
+    print(f"No data           : {len(df[df['status']=='no_data'])}")
+    print(f"Insufficient data : {len(df[df['status']=='insufficient_data'])}")
+    print(f"Errors            : {len(df[df['status']=='error'])}")
+    print(f"Total anomalies   : {total_anom}")
+    print(f"Results saved to  : {db_path}")
+    if len(df[df["status"] == "ok"]):
+        print("\nCluster breakdown:")
+        print(df.groupby("cluster")["anomalies"].agg(["sum", "count", "mean"]).to_string())
+    print("\nElapsed: %.1f min" % ((time.time() - t0) / 60))
 
 
 if __name__ == "__main__":
