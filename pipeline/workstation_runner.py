@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
 """
-Entropy Anomaly SETI - Workstation Pipeline (clean standalone runner)
+Entropy Anomaly SETI - Workstation Pipeline (Phase 3)
 
-Design notes
-------------
-* Pure numpy/scipy. NO numba (it caused "no implementation found for
-  'numpy.save'" errors inside multiprocessing workers and gave no benefit
-  here -- WSL does not expose the Arc GPU to lightkurve).
-* NO np.save/np.load caching (numba + pickling conflict).
-* The KS statistic is DATA-DEPENDENT (KS test of each window against a
-  normal distribution). The previous JIT version sorted the flux and then
-  ignored it, returning a constant ~1/sqrt(n) for every window, which is
-  why every target reported 0 anomalies.
-* ThreadPoolExecutor: TESS downloads are I/O-bound, threads avoid the
-  pickling/spawn problems of ProcessPool on WSL/Windows.
-* setup_and_run.sh no longer GENERATES this file via heredoc. It is a
-  committed, syntax-checked source file. That removes the whole class of
-  "break outside loop" / indentation bugs from earlier attempts.
+METRIC ALIGNMENT (user decision: option 1)
+-----------------------------------------
+This runner uses the EXACT same metric as the published Phase 1/2 results
+in pipeline/tess_batch_analyzer.py and pipeline/single_star_batch.py:
+
+    Kolmogorov complexity K(S) via zlib compression of quantized flux
+    WINDOW_SIZE = 150, STEP_SIZE = 10 (overlapping windows)
+    anomaly  =  K(S) < mean(K) - 3*std(K)
+
+so Phase 3 numbers are directly comparable to Phase 1/2.
+
+History of fixes
+----------------
+* The earlier numba-accelerated runner had a broken KS statistic: it sorted
+  the flux then never used it, returning a constant ~1/sqrt(n) for every
+  window -> std ~ 0 -> zero anomalies on every target, even when TESS data
+  downloaded fine. That metric was ALSO inconsistent with Phase 1/2.
+* NO numba (caused "no implementation found for 'numpy.save'" in workers
+  and gives no benefit; WSL does not expose the Arc GPU to lightkurve).
+* NO np.save/np.load caching.
+* ThreadPoolExecutor: TESS downloads are I/O-bound; threads avoid the
+  ProcessPool pickling/spawn problems on WSL/Windows.
+* setup_and_run.sh no longer GENERATES this file via heredoc -- it is a
+  committed, syntax-checked source file (kills the "break outside loop" /
+  indentation bug class).
 
 Usage
 -----
@@ -28,8 +38,8 @@ Usage
 """
 
 import os
-import sys
 import time
+import zlib
 import sqlite3
 import argparse
 import warnings
@@ -38,40 +48,46 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
-from scipy.special import ndtr  # vectorized standard-normal CDF
 
 warnings.filterwarnings("ignore")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# ---- Phase 1/2 constants (identical to tess_batch_analyzer.py) ----
+WINDOW_SIZE = 150
+STEP_SIZE = 10
+ANOMALY_SIGMA = 3.0
+
 
 # ===================================================================
-# METRICS (pure numpy / scipy -- data dependent)
+# METRIC -- verbatim Phase 1/2 implementation
 # ===================================================================
-def ks_ratio(window):
-    """KS statistic of a window against N(0,1) after z-scoring, scaled by sqrt(n).
+def compute_ks(flux_array, levels=256):
+    """Kolmogorov complexity via zlib compression."""
+    clean = flux_array[~np.isnan(flux_array)]
+    if len(clean) == 0:
+        return 1.0
+    fmin, fmax = np.min(clean), np.max(clean)
+    if fmax == fmin:
+        return 1.0
+    norm = (clean - fmin) / (fmax - fmin)
+    quant = (norm * (levels - 1)).astype(np.uint8).tobytes()
+    return len(zlib.compress(quant, level=9)) / len(quant)
 
-    A window whose flux distribution is close to Gaussian yields a small value;
-    structured / non-Gaussian (information-bearing) windows yield a large one.
-    """
-    x = np.asarray(window, dtype=float)
-    x = x[np.isfinite(x)]
-    n = len(x)
-    if n < 10:
-        return 0.0
-    mu = x.mean()
-    sigma = x.std()
-    if sigma <= 0 or not np.isfinite(sigma):
-        return 0.0
-    z = np.sort((x - mu) / sigma)
-    cdf_theory = ndtr(z)
-    cdf_empirical = np.arange(1, n + 1) / n
-    ks = np.max(np.abs(cdf_empirical - cdf_theory))
-    return float(ks * np.sqrt(n))
+
+def sliding_window_kcomplexity(flux, window_size=WINDOW_SIZE, step_size=STEP_SIZE):
+    """Sliding window Kolmogorov complexity scan (overlapping windows)."""
+    n_windows = (len(flux) - window_size) // step_size + 1
+    comps = []
+    for i in range(n_windows):
+        start = i * step_size
+        window = flux[start:start + window_size]
+        comps.append(compute_ks(window))
+    return np.array(comps)
 
 
 def shannon_entropy(window, num_bins=50):
-    """Shannon entropy (bits) of the window's value distribution."""
+    """Supplementary diagnostic only -- NOT used for anomaly detection."""
     x = np.asarray(window, dtype=float)
     x = x[np.isfinite(x)]
     if len(x) < 2:
@@ -83,43 +99,57 @@ def shannon_entropy(window, num_bins=50):
 
 
 # ===================================================================
-# DATA ACQUISITION (lightkurve, robust across 2.x versions)
+# DATA ACQUISITION (lightkurve 2.x, mirrors Phase 1/2 safe_download)
 # ===================================================================
 def _flux_from_lightcurve(lc):
-    """Extract a clean float array from a LightCurve object."""
-    colnames = [str(c).lower() for c in lc.colnames]
+    """Return normalized, NaN-free flux -- same as lc.remove_nans().normalize()."""
     arr = None
-    for candidate in ("pdcsap_flux", "sap_flux", "flux"):
-        if candidate in colnames:
-            col = lc.colnames[colnames.index(candidate)]
-            try:
-                arr = np.asarray(lc[col].value, dtype=float)
-            except Exception:
-                try:
-                    arr = np.asarray(lc[col], dtype=float)
-                except Exception:
-                    arr = None
-            if arr is not None:
-                break
-    if arr is None:
+    try:
         arr = np.asarray(lc.flux.value, dtype=float)
+    except Exception:
+        try:
+            arr = np.asarray(lc.flux, dtype=float)
+        except Exception:
+            pass
+    if arr is None:
+        # Fall back to explicit flux columns
+        colnames = [str(c).lower() for c in lc.colnames]
+        for candidate in ("pdcsap_flux", "sap_flux", "flux"):
+            if candidate in colnames:
+                col = lc.colnames[colnames.index(candidate)]
+                try:
+                    arr = np.asarray(lc[col].value, dtype=float)
+                except Exception:
+                    arr = np.asarray(lc[col], dtype=float)
+                if arr is not None:
+                    break
+    if arr is None:
+        return None
     arr = arr[np.isfinite(arr)]
-    if len(arr) < 100:
+    if len(arr) <= WINDOW_SIZE:
         return None
-    # Mild sigma-clip to remove cosmic-ray outliers (keep structure intact)
     med = np.median(arr)
-    mad = np.median(np.abs(arr - med)) + 1e-12
-    keep = np.abs(arr - med) < 8 * 1.4826 * mad
-    arr = arr[keep]
-    if len(arr) < 100:
+    if med == 0 or not np.isfinite(med):
         return None
-    # Normalize (anomaly metric is scale-free)
-    arr = arr / np.median(arr)
-    return arr
+    return arr / med
+
+
+def _download_flux(search, max_products=3, verbose=False, log=print):
+    """Try the first few search products with Phase 1/2 download settings."""
+    for i in range(min(max_products, len(search))):
+        try:
+            lc = search[i].download(quality_bitmask="default")
+            arr = _flux_from_lightcurve(lc)
+            if arr is not None and len(arr) > WINDOW_SIZE:
+                return arr
+        except Exception as e:
+            if verbose:
+                log(f"      product {i}: {type(e).__name__}: {str(e)[:80]}")
+    return None
 
 
 def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
-    """Download a TESS light curve for a TIC id. Returns (flux_array, sector, source)."""
+    """Download a TESS light curve for a TIC id. Returns (flux, sector, source)."""
     import lightkurve as lk
 
     def log(*a):
@@ -128,32 +158,33 @@ def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
 
     sectors_to_try = [sector] + [s for s in range(1, 70) if s != sector]
 
-    # ---- 1) 2-minute / 20-second cadence light curves ----
+    # ---- 1) 2-min / 20-s cadence products, catalog sector first ----
     for try_sector in sectors_to_try[:max_sectors]:
         try:
             search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS", sector=try_sector)
             if len(search) == 0:
-                search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS")
-            if len(search) == 0:
-                log(f"s{try_sector}: no lightcurve products")
+                log(f"s{try_sector}: no products")
                 continue
             log(f"s{try_sector}: {len(search)} product(s)")
-            # Download all products and stitch -> more cadences, fewer gaps
-            try:
-                collection = search.download_all()
-                if len(collection) == 0:
-                    continue
-                lc = collection.stitch() if hasattr(collection, "stitch") else collection[0]
-            except Exception:
-                lc = search.download()
-            arr = _flux_from_lightcurve(lc)
-            if arr is not None and len(arr) > 100:
+            arr = _download_flux(search, verbose=verbose, log=log)
+            if arr is not None:
                 return arr, try_sector, "lightcurve"
         except Exception as e:
             log(f"s{try_sector}: {type(e).__name__}: {str(e)[:80]}")
             continue
 
-    # ---- 2) FFI cutout fallback (works for any star in the TESS FOV) ----
+    # ---- 1b) unfiltered search (any sector / any author) ----
+    try:
+        search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS")
+        if len(search) > 0:
+            log(f"unfiltered: {len(search)} product(s)")
+            arr = _download_flux(search, max_products=5, verbose=verbose, log=log)
+            if arr is not None:
+                return arr, sector, "lightcurve-any"
+    except Exception as e:
+        log(f"unfiltered: {type(e).__name__}: {str(e)[:80]}")
+
+    # ---- 2) FFI cutout fallback (any star in the TESS field of view) ----
     log("falling back to FFI / TessCut")
     try:
         try:
@@ -173,7 +204,7 @@ def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
                     mask = tpf.create_threshold_mask(threshold=3)
                     lc = tpf.to_lightcurve(aperture_mask=mask)
                 arr = _flux_from_lightcurve(lc)
-                if arr is not None and len(arr) > 100:
+                if arr is not None:
                     return arr, try_sector, "ffi"
             except Exception as e:
                 log(f"ffi s{try_sector}: {type(e).__name__}: {str(e)[:80]}")
@@ -187,54 +218,45 @@ def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
 # ===================================================================
 # PER-TARGET ANALYSIS
 # ===================================================================
-def process_single_star(tic_id, sector=11, window_size=150, verbose=False):
+def process_single_star(tic_id, sector=11, window_size=WINDOW_SIZE, verbose=False):
     try:
         flux, used_sector, source = fetch_flux(tic_id, sector=sector, verbose=verbose)
         if flux is None:
             return {"tic_id": tic_id, "status": "no_data", "anomalies": 0,
-                    "mean_ks": 0.0, "error": "No TESS data found (lightcurve + FFI)"}
+                    "mean_ks": np.nan, "error": "No TESS data found (lightcurve + FFI)"}
 
         n_cadences = len(flux)
-        ws = window_size
-        if n_cadences < ws:
-            ws = max(10, n_cadences // 2)
-        n_windows = max(1, n_cadences // ws)
-
-        ks_vals, ent_vals = [], []
-        for i in range(n_windows):
-            w = flux[i * ws: min((i + 1) * ws, n_cadences)]
-            if len(w) < 10:
-                continue
-            ks_vals.append(ks_ratio(w))
-            ent_vals.append(shannon_entropy(w, 50))
-
-        if len(ks_vals) < 5:
+        comp = sliding_window_kcomplexity(flux, window_size, STEP_SIZE)
+        if len(comp) < 5:
             return {"tic_id": tic_id, "status": "insufficient_data", "anomalies": 0,
-                    "mean_ks": 0.0, "cadences": n_cadences}
+                    "mean_ks": np.nan, "cadences": n_cadences}
 
-        ks_arr = np.asarray(ks_vals)
-        mean_ks = float(ks_arr.mean())
-        std_ks = float(ks_arr.std())
-        threshold = mean_ks - 3 * std_ks
-        anomalies = int((ks_arr < threshold).sum()) if std_ks > 0 else 0
+        mean_k = float(np.mean(comp))
+        std_k = float(np.std(comp))
+        threshold = mean_k - ANOMALY_SIGMA * std_k
+        anomalies = int(np.sum(comp < threshold))
+
+        # Supplementary entropy over the same windows (diagnostic only)
+        ent = [shannon_entropy(flux[i * STEP_SIZE:i * STEP_SIZE + window_size])
+               for i in range(len(comp))]
 
         return {
             "tic_id": tic_id,
             "status": "ok",
             "cadences": n_cadences,
-            "windows": len(ks_vals),
+            "windows": len(comp),
             "anomalies": anomalies,
-            "mean_ks": mean_ks,
-            "std_ks": std_ks,
+            "mean_ks": mean_k,
+            "std_ks": std_k,
             "threshold": float(threshold),
-            "mean_entropy": float(np.mean(ent_vals)),
+            "mean_entropy": float(np.mean(ent)),
             "is_anomalous": anomalies > 0,
             "sector": used_sector,
             "source": source,
         }
     except Exception as e:
-        return {"tic_id": tic_id, "status": "error", "error": f"{type(e).__name__}: {str(e)[:180]}",
-                "anomalies": 0}
+        return {"tic_id": tic_id, "status": "error",
+                "error": f"{type(e).__name__}: {str(e)[:180]}", "anomalies": 0}
 
 
 # ===================================================================
@@ -242,10 +264,10 @@ def process_single_star(tic_id, sector=11, window_size=150, verbose=False):
 # ===================================================================
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--test", action="store_true", help="Process 2 targets sequentially with verbose output")
-    ap.add_argument("--verbose", action="store_true", help="Verbose per-target download logs")
+    ap.add_argument("--test", action="store_true", help="2 targets, sequential, verbose")
+    ap.add_argument("--verbose", action="store_true", help="Verbose download logs")
     ap.add_argument("--sector", type=int, default=None, help="Override catalog sector")
-    ap.add_argument("--workers", type=int, default=None, help="Number of parallel workers")
+    ap.add_argument("--workers", type=int, default=None, help="Parallel workers")
     args = ap.parse_args()
 
     catalog_path = os.path.join(BASE_DIR, "data", "expanded_star_catalog.csv")
@@ -261,12 +283,13 @@ def main():
         targets.append((int(row["tic_id"]), sec))
 
     n_workers = args.workers or min(12, os.cpu_count() or 8)
-
     if args.test:
         targets = targets[:2]
         n_workers = 1
         print("=== TEST MODE: 2 targets, sequential, verbose ===\n")
 
+    print(f"Metric: zlib Kolmogorov complexity | window={WINDOW_SIZE} "
+          f"step={STEP_SIZE} sigma={ANOMALY_SIGMA}")
     print(f"Loaded {len(targets)} targets | workers={n_workers}", flush=True)
     t0 = time.time()
     results = []
@@ -280,7 +303,7 @@ def main():
     else:
         print(f"Processing {len(targets)} targets with {n_workers} workers...", flush=True)
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
-            futs = {ex.submit(process_single_star, tic, sec, 150, args.verbose): tic
+            futs = {ex.submit(process_single_star, tic, sec, WINDOW_SIZE, args.verbose): tic
                     for tic, sec in targets}
             for i, fut in enumerate(as_completed(futs), 1):
                 r = fut.result()
@@ -300,7 +323,6 @@ def main():
         print("\n=== TEST COMPLETE ===")
         return
 
-    # ---- Save results ----
     os.makedirs(os.path.join(BASE_DIR, "results"), exist_ok=True)
     db_path = os.path.join(BASE_DIR, "results",
                            f"workstation_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
