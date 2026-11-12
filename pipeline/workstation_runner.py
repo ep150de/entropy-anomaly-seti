@@ -15,29 +15,31 @@ so Phase 3 numbers are directly comparable to Phase 1/2.
 
 History of fixes
 ----------------
-* The earlier numba-accelerated runner had a broken KS statistic: it sorted
-  the flux then never used it, returning a constant ~1/sqrt(n) for every
-  window -> std ~ 0 -> zero anomalies on every target, even when TESS data
-  downloaded fine. That metric was ALSO inconsistent with Phase 1/2.
-* NO numba (caused "no implementation found for 'numpy.save'" in workers
-  and gives no benefit; WSL does not expose the Arc GPU to lightkurve).
+* Broken numba KS statistic (constant 1/sqrt(n)) -> zero anomalies. Replaced.
+* NO numba (caused "no implementation found for 'numpy.save'" in workers).
 * NO np.save/np.load caching.
-* ThreadPoolExecutor: TESS downloads are I/O-bound; threads avoid the
-  ProcessPool pickling/spawn problems on WSL/Windows.
-* setup_and_run.sh no longer GENERATES this file via heredoc -- it is a
-  committed, syntax-checked source file (kills the "break outside loop" /
-  indentation bug class).
+* ThreadPoolExecutor: TESS downloads are I/O-bound.
+* setup_and_run.sh no longer generates this file via heredoc.
+* FFI fallback now queries TessCut WITHOUT a sector filter (returns every
+  sector that actually observed the star). The catalog hardcodes sector=11
+  for all targets, which does not cover Orion OB1 (Dec ~ -5 deg) or several
+  bright Hyades standards -- those targets need their real observed sectors.
+* Every failed target now records WHY in the DB `error` column.
+* --retry-missing re-runs only previously failed targets and merges them
+  into a complete results DB, avoiding a full 18-target re-download.
 
 Usage
 -----
-  python3 pipeline/workstation_runner.py                 # full 18-target run
-  python3 pipeline/workstation_runner.py --test         # 2 targets, verbose
-  python3 pipeline/workstation_runner.py --verbose      # full run, verbose
-  python3 pipeline/workstation_runner.py --sector 11    # override sector
+  python3 pipeline/workstation_runner.py                    # full 18-target run
+  python3 pipeline/workstation_runner.py --test            # 2 targets, verbose
+  python3 pipeline/workstation_runner.py --retry-missing   # only failed targets
+  python3 pipeline/workstation_runner.py --verbose         # full run, verbose
+  python3 pipeline/workstation_runner.py --sector 11       # override sector
   python3 pipeline/workstation_runner.py --workers 8
 """
 
 import os
+import glob
 import time
 import zlib
 import sqlite3
@@ -112,7 +114,6 @@ def _flux_from_lightcurve(lc):
         except Exception:
             pass
     if arr is None:
-        # Fall back to explicit flux columns
         colnames = [str(c).lower() for c in lc.colnames]
         for candidate in ("pdcsap_flux", "sap_flux", "flux"):
             if candidate in colnames:
@@ -134,7 +135,7 @@ def _flux_from_lightcurve(lc):
     return arr / med
 
 
-def _download_flux(search, max_products=3, verbose=False, log=print):
+def _download_flux(search, max_products=3, verbose=False, log=None):
     """Try the first few search products with Phase 1/2 download settings."""
     for i in range(min(max_products, len(search))):
         try:
@@ -143,18 +144,21 @@ def _download_flux(search, max_products=3, verbose=False, log=print):
             if arr is not None and len(arr) > WINDOW_SIZE:
                 return arr
         except Exception as e:
-            if verbose:
-                log(f"      product {i}: {type(e).__name__}: {str(e)[:80]}")
+            if verbose and log:
+                log(f"2min product {i}: {type(e).__name__}: {str(e)[:90]}")
     return None
 
 
 def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
-    """Download a TESS light curve for a TIC id. Returns (flux, sector, source)."""
+    """Download a TESS light curve. Returns (flux, sector, source, reasons)."""
     import lightkurve as lk
 
-    def log(*a):
+    reasons = []
+
+    def log(msg):
+        reasons.append(msg)
         if verbose:
-            print("      ", *a, flush=True)
+            print("      " + msg, flush=True)
 
     sectors_to_try = [sector] + [s for s in range(1, 70) if s != sector]
 
@@ -163,39 +167,42 @@ def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
         try:
             search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS", sector=try_sector)
             if len(search) == 0:
-                log(f"s{try_sector}: no products")
+                log(f"s{try_sector}: 0 products")
                 continue
             log(f"s{try_sector}: {len(search)} product(s)")
             arr = _download_flux(search, verbose=verbose, log=log)
             if arr is not None:
-                return arr, try_sector, "lightcurve"
+                return arr, try_sector, "lightcurve", reasons
+            log(f"s{try_sector}: download/flux extraction failed")
         except Exception as e:
-            log(f"s{try_sector}: {type(e).__name__}: {str(e)[:80]}")
-            continue
+            log(f"s{try_sector}: {type(e).__name__}: {str(e)[:90]}")
 
     # ---- 1b) unfiltered search (any sector / any author) ----
     try:
         search = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS")
+        log(f"unfiltered: {len(search)} product(s)")
         if len(search) > 0:
-            log(f"unfiltered: {len(search)} product(s)")
-            arr = _download_flux(search, max_products=5, verbose=verbose, log=log)
+            arr = _download_flux(search, max_products=8, verbose=verbose, log=log)
             if arr is not None:
-                return arr, sector, "lightcurve-any"
+                return arr, sector, "lightcurve-any", reasons
+            log("unfiltered: download/flux extraction failed")
     except Exception as e:
-        log(f"unfiltered: {type(e).__name__}: {str(e)[:80]}")
+        log(f"unfiltered: {type(e).__name__}: {str(e)[:90]}")
 
-    # ---- 2) FFI cutout fallback (any star in the TESS field of view) ----
-    log("falling back to FFI / TessCut")
+    # ---- 2) FFI / TessCut: NO sector filter -> all sectors that saw star ----
+    log("FFI: querying TessCut for ALL observed sectors")
     try:
         try:
             from lightkurve import search_tesscut
         except ImportError:
             from lightkurve import TesscutClass
             search_tesscut = TesscutClass().search
-        for try_sector in sectors_to_try[:3]:
+        res = search_tesscut(f"TIC {tic_id}")
+        n_sectors = len(res)
+        log(f"FFI: {n_sectors} sector(s) in field of view")
+        for i in range(min(n_sectors, 10)):
             try:
-                res = search_tesscut(f"TIC {tic_id}", sector=try_sector)
-                tpf = res.download(cutout_size=11)
+                tpf = res[i].download(cutout_size=11)
                 if tpf is None:
                     continue
                 try:
@@ -205,14 +212,16 @@ def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
                     lc = tpf.to_lightcurve(aperture_mask=mask)
                 arr = _flux_from_lightcurve(lc)
                 if arr is not None:
-                    return arr, try_sector, "ffi"
+                    return arr, sector, "ffi", reasons
+                log(f"FFI sector#{i}: too few usable cadences")
             except Exception as e:
-                log(f"ffi s{try_sector}: {type(e).__name__}: {str(e)[:80]}")
-                continue
+                log(f"FFI sector#{i}: {type(e).__name__}: {str(e)[:90]}")
+        if n_sectors == 0:
+            log("FFI: star not in TESS field of view in any sector")
     except Exception as e:
-        log(f"ffi unavailable: {type(e).__name__}: {str(e)[:80]}")
+        log(f"FFI unavailable: {type(e).__name__}: {str(e)[:90]}")
 
-    return None, sector, "none"
+    return None, sector, "none", reasons
 
 
 # ===================================================================
@@ -220,10 +229,11 @@ def fetch_flux(tic_id, sector=11, verbose=False, max_sectors=6):
 # ===================================================================
 def process_single_star(tic_id, sector=11, window_size=WINDOW_SIZE, verbose=False):
     try:
-        flux, used_sector, source = fetch_flux(tic_id, sector=sector, verbose=verbose)
+        flux, used_sector, source, reasons = fetch_flux(tic_id, sector=sector, verbose=verbose)
         if flux is None:
+            detail = "; ".join(reasons[-6:]) if reasons else "no products found"
             return {"tic_id": tic_id, "status": "no_data", "anomalies": 0,
-                    "mean_ks": np.nan, "error": "No TESS data found (lightcurve + FFI)"}
+                    "mean_ks": np.nan, "error": "No TESS data | " + detail[:400]}
 
         n_cadences = len(flux)
         comp = sliding_window_kcomplexity(flux, window_size, STEP_SIZE)
@@ -236,7 +246,6 @@ def process_single_star(tic_id, sector=11, window_size=WINDOW_SIZE, verbose=Fals
         threshold = mean_k - ANOMALY_SIGMA * std_k
         anomalies = int(np.sum(comp < threshold))
 
-        # Supplementary entropy over the same windows (diagnostic only)
         ent = [shannon_entropy(flux[i * STEP_SIZE:i * STEP_SIZE + window_size])
                for i in range(len(comp))]
 
@@ -260,11 +269,53 @@ def process_single_star(tic_id, sector=11, window_size=WINDOW_SIZE, verbose=Fals
 
 
 # ===================================================================
+# HELPERS
+# ===================================================================
+def _latest_db():
+    dbs = sorted(glob.glob(os.path.join(BASE_DIR, "results", "workstation_run_*.db")))
+    return dbs[-1] if dbs else None
+
+
+def _write_db(df, prefix="workstation_run"):
+    os.makedirs(os.path.join(BASE_DIR, "results"), exist_ok=True)
+    db_path = os.path.join(
+        BASE_DIR, "results",
+        f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+    conn = sqlite3.connect(db_path)
+    df.to_sql("results", conn, if_exists="replace", index=False)
+    conn.close()
+    return db_path
+
+
+def _print_summary(df, db_path, t0):
+    total_anom = df[df["status"] == "ok"]["anomalies"].sum()
+    print("\n=== WORKSTATION RUN SUMMARY ===")
+    print(f"Targets processed : {len(df)}")
+    print(f"Successful (ok)   : {len(df[df['status']=='ok'])}")
+    print(f"No data           : {len(df[df['status']=='no_data'])}")
+    print(f"Insufficient data : {len(df[df['status']=='insufficient_data'])}")
+    print(f"Errors            : {len(df[df['status']=='error'])}")
+    print(f"Total anomalies   : {total_anom}")
+    print(f"Results saved to  : {db_path}")
+    if len(df):
+        print("\nCluster breakdown (all targets; no-data rows count as 0):")
+        print(df.groupby("cluster")["anomalies"].agg(["sum", "count", "mean"]).to_string())
+    missing = df[df["status"] != "ok"]
+    if len(missing):
+        print("\nTargets still missing (with reasons):")
+        for r in missing.itertuples():
+            print(f"  TIC {r.tic_id}: {str(getattr(r, 'error', ''))[:160]}")
+    print("\nElapsed: %.1f min" % ((time.time() - t0) / 60))
+
+
+# ===================================================================
 # MAIN
 # ===================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test", action="store_true", help="2 targets, sequential, verbose")
+    ap.add_argument("--retry-missing", action="store_true",
+                    help="Re-run only failed targets from the latest DB and merge results")
     ap.add_argument("--verbose", action="store_true", help="Verbose download logs")
     ap.add_argument("--sector", type=int, default=None, help="Override catalog sector")
     ap.add_argument("--workers", type=int, default=None, help="Parallel workers")
@@ -272,20 +323,42 @@ def main():
 
     catalog_path = os.path.join(BASE_DIR, "data", "expanded_star_catalog.csv")
     catalog = pd.read_csv(catalog_path)
+    catalog["tic_id"] = catalog["tic_id"].astype(int)
+    cat_by_tic = catalog.set_index("tic_id")
 
-    high = catalog[catalog["priority"] >= 2]
-    medium = catalog[catalog["priority"] == 1]
-    ordered = pd.concat([high, medium], ignore_index=True)
+    ordered = pd.concat([catalog[catalog["priority"] >= 2],
+                         catalog[catalog["priority"] == 1]], ignore_index=True)
 
     targets = []
     for _, row in ordered.iterrows():
         sec = args.sector if args.sector else int(row.get("sector", 11))
         targets.append((int(row["tic_id"]), sec))
 
-    n_workers = args.workers or min(12, os.cpu_count() or 8)
+    # ---- retry-missing: restrict to previously failed TICs ----
+    prev_df = None
+    if args.retry_missing:
+        db = _latest_db()
+        if not db:
+            print("No prior results DB found. Run the full pipeline first.")
+            return
+        conn = sqlite3.connect(db)
+        prev_df = pd.read_sql("SELECT * FROM results", conn)
+        conn.close()
+        prev_df["tic_id"] = prev_df["tic_id"].astype(int)
+        failed = set(prev_df[prev_df["status"] != "ok"]["tic_id"])
+        if not failed:
+            print("No missing targets in the latest DB -- nothing to retry.")
+            return
+        targets = [(tic, int(cat_by_tic.loc[tic, "sector"]) if tic in cat_by_tic.index else 11)
+                   for tic in sorted(failed)]
+        args.verbose = True
+        print(f"=== RETRY MODE: {len(targets)} previously failed targets "
+              f"(from {os.path.basename(db)}) ===\n")
+
+    sequential = args.test or args.retry_missing
+    n_workers = 1 if sequential else (args.workers or min(12, os.cpu_count() or 8))
     if args.test:
         targets = targets[:2]
-        n_workers = 1
         print("=== TEST MODE: 2 targets, sequential, verbose ===\n")
 
     print(f"Metric: zlib Kolmogorov complexity | window={WINDOW_SIZE} "
@@ -294,11 +367,12 @@ def main():
     t0 = time.time()
     results = []
 
-    if args.test:
+    if sequential:
         for tic, sec in targets:
             print(f"[TIC {tic}] sector {sec} ...", flush=True)
-            r = process_single_star(tic, sector=sec, verbose=True)
-            print(f"  -> {r}", flush=True)
+            r = process_single_star(tic, sector=sec, verbose=args.verbose)
+            print(f"  -> {r['status']}: {r.get('anomalies',0)} anomalies "
+                  f"| {str(r.get('error',''))[:120]}", flush=True)
             results.append(r)
     else:
         print(f"Processing {len(targets)} targets with {n_workers} workers...", flush=True)
@@ -323,30 +397,21 @@ def main():
         print("\n=== TEST COMPLETE ===")
         return
 
-    os.makedirs(os.path.join(BASE_DIR, "results"), exist_ok=True)
-    db_path = os.path.join(BASE_DIR, "results",
-                           f"workstation_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
     df = pd.DataFrame(results)
-    conn = sqlite3.connect(db_path)
-    df.to_sql("results", conn, if_exists="replace", index=False)
-    conn.close()
-
-    cluster_map = dict(zip(catalog["tic_id"].astype(int), catalog["cluster"]))
+    cluster_map = dict(zip(catalog["tic_id"], catalog["cluster"]))
     df["cluster"] = df["tic_id"].map(cluster_map).fillna("unknown")
-    total_anom = df[df["status"] == "ok"]["anomalies"].sum()
 
-    print("\n=== WORKSTATION RUN SUMMARY ===")
-    print(f"Targets processed : {len(results)}")
-    print(f"Successful (ok)   : {len(df[df['status']=='ok'])}")
-    print(f"No data           : {len(df[df['status']=='no_data'])}")
-    print(f"Insufficient data : {len(df[df['status']=='insufficient_data'])}")
-    print(f"Errors            : {len(df[df['status']=='error'])}")
-    print(f"Total anomalies   : {total_anom}")
-    print(f"Results saved to  : {db_path}")
-    if len(df[df["status"] == "ok"]):
-        print("\nCluster breakdown:")
-        print(df.groupby("cluster")["anomalies"].agg(["sum", "count", "mean"]).to_string())
-    print("\nElapsed: %.1f min" % ((time.time() - t0) / 60))
+    # Merge retried results over the previous complete set
+    if args.retry_missing and prev_df is not None:
+        failed_ids = set(df["tic_id"])
+        kept = prev_df[~prev_df["tic_id"].isin(failed_ids)].copy()
+        if "cluster" not in kept.columns:
+            kept["cluster"] = kept["tic_id"].map(cluster_map).fillna("unknown")
+        df = pd.concat([kept, df], ignore_index=True)
+        print(f"\nMerged: {len(kept)} prior ok + {len(results)} retried = {len(df)} total")
+
+    db_path = _write_db(df)
+    _print_summary(df, db_path, t0)
 
 
 if __name__ == "__main__":
