@@ -12,3 +12,5 @@ darpa-classified-summary.md
 *.webm
 *.mp4
 "Screen recording"*
+/expanded_star_catalog.csv
+/expanded_batch_results.csv

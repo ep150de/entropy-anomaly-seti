@@ -1,101 +1,104 @@
-# Entropy Anomaly SETI in the Pleiades Cluster
+# Entropy Anomaly SETI — Pre-Registered Rebuild
 
-Information-theoretic analysis of stellar variability in the Pleiades cluster to detect entropy anomalies as potential signatures of distributed quantum communication networks.
+> **STATUS: the original detection claims are WITHDRAWN.**
+> A first-pass referee review (2026-11-14, commit `7f8079e`) rejected the
+> manuscript, and its decisive findings were independently reproduced against
+> this repository. All Phase 1/2 results, catalogs and figures are **falsified
+> and superseded**. See `PROTOCOL.md` and `archive/README.md`.
+>
+> The repository is being rebuilt as a **falsification-first methods / null-result
+> study**: *"A compression-based anomaly statistic for TESS light curves:
+> calibration, systematics, and limits."* A null result is the expected outcome
+> and will be published regardless of sign.
 
-## Project Structure
+## What is current
 
-```
-entropy-anomaly-seti/
-├── paper-draft-final.md          # Complete peer-review-ready manuscript
-├── data/                          # All CSV data and analysis outputs
-│   ├── expanded_star_catalog.csv  # 16 targets with roles/priorities
-│   ├── expanded_batch_results.csv # Phase 2 analysis results (12 stars)
-│   ├── pleiades_targets.csv       # Original 4-star catalog
-│   ├── pleiades_full_targets.csv  # Expanded 134-star catalog
-│   ├── cluster_anomalies.csv      # Anomaly timestamps and details
-│   └── control_cluster_results.csv # Hyades/Taurus control test results
-├── figures/                        # Publication-quality visualizations
-├── starlight/                     # Stellar profiles and entropy data
-├── pipeline/                      # Analysis scripts
-│   ├── build_pleiades_catalog.py
-│   ├── tess_batch_analyzer.py
-│   ├── single_star_batch.py
-│   ├── control_test_v2.py
-│   ├── workstation_runner.py     # Optimized parallel processor
-│   └── visualize_pleiades.py
-├── reports/
-│   ├── REPORT_PHASE2.md          # Phase 2 completion report
-│   └── observational-network-switch-report.md
-├── peer_review_cover_letter.md
-├── conflict_disclosure_form.md
-├── darpa-classified-summary.md
-├── pre-submission-validation.py
-├── package_for_release.py
-├── setup_and_run.sh              # One-click workstation setup + execution
-├── .gitignore
-└── README.md
-```
+| Path | Purpose |
+|---|---|
+| `PROTOCOL.md` | Pre-registered study design (v2.0.0), H0/H1, decision rule, frozen parameters |
+| `config/protocol.json` | Machine-readable pre-registration; SHA-256 frozen into every downstream catalog |
+| `pipeline/build_sample_v2.py` | Corrected Gaia DR3 / TIC v8.2 sample builder (no synthetic values) |
+| `pipeline/workstation_runner.py` | Reusable TESS download + SQLite pipeline infrastructure |
+| `setup_and_run.sh` | Thin venv + run wrapper |
 
-## Quick Start (Workstation Edition)
+`config/protocol.json` is the **single source of truth**. Editing it changes the
+protocol hash and invalidates every downstream catalog and result.
+
+## Why the original claim was withdrawn
+
+Verified locally on 2026-11-14:
+
+- Targets labelled "Pleiades" are not Pleiades members — TIC 261136679 is
+  π Men (Dec −80°, 18 pc). The real Pleiades were observed in TESS sectors
+  **42–44, 70–71**, never sector 11.
+- Catalog coordinates, Tmag and distances were generated with `np.random.uniform`.
+- The zlib `K(S)` statistic is saturated: 150 random bytes → 161 bytes, so
+  `K(S)=1.0733` is container overhead, not entropy. One 8σ cadence *lowers*
+  `K(S)` (1.0733 → 1.0533), so `μ−3σ` flags cosmic rays.
+- 24 headline "anomalies" = **2 events**, inflated by 93%-overlapping windows.
+  Replacing those two cadences removes all anomalies.
+- `p<10⁻¹⁵` and "Excess factor >∞" are hard-coded strings, never computed.
+- Several figures were generated from `np.random` and presented as results.
+- Controls showed the same effect as targets — an instrumental/statistical origin.
+
+The conclusion is **disproven**, not under-powered. It is not being rescued.
+
+## Corrected design (summary)
+
+- Sample: Gaia DR3 Pleiades members cross-matched to TIC v8.2 by position;
+  real sectors 42–44 / 70–71; one documented data product; blends within one
+  TESS pixel merged; ≥300 matched field controls from the same sector/camera/CCD.
+- Preprocessing: `hard` quality mask, detrend, 5σ per-cadence clipping,
+  time-based windows that never cross gaps.
+- Statistic: LZ76 / permutation entropy on a fixed per-star noise scale
+  (no per-window min-max); **events**, not overlapping windows.
+- Null: ≥1000 IAAFT surrogates per star; pre-registered threshold; FDR +
+  look-elsewhere correction; `α_global = 0.01`.
+- Validation: ≥1000 injections, ROC curves, matched-filter/BLS baseline.
+- Reproducibility: pinned lockfile, fixed seeds, MAST product IDs, Zenodo DOI.
+
+## Running the sample builder
 
 ```bash
-# Clone repo
-git clone https://github.com/ep150de/entropy-anomaly-seti.git
-cd entropy-anomaly-seti
-
-# One-click setup + full pipeline run
-bash setup_and_run.sh
+python3 pipeline/build_sample_v2.py --self-test    # offline, stdlib only
+python3 pipeline/build_sample_v2.py --dry-run      # frozen params + Gaia ADQL
+python3 pipeline/build_sample_v2.py --build        # real Gaia + TIC + tess-point
+python3 pipeline/build_sample_v2.py --validate-only --input data/catalog_v2.csv
 ```
 
-The script auto-installs Python dependencies in a local venv and runs the 16-target analysis using 12 parallel workers with Numba JIT optimization.
+`--build` requires `astroquery`, `astropy` and `tess-point` plus network access.
+The builder **raises rather than fabricating** any value if a service is
+unreachable; every emitted row carries a `provenance` string and the protocol hash.
 
-### Hardware Requirements
-- Minimum: 16GB RAM, 2 CPU cores
-- Recommended: 64GB RAM, Intel Arc GPU + i7/i9 CPU
-- Storage: NVMe SSD required (TESS data cache intensive)
+## Archive (not scientific evidence)
 
-## Key Results
+`archive/` retains, for transparency, the superseded manuscript, cover letter,
+COI form, Phase-2 report, simulated figures and duplicate catalogs. None of it
+may be cited or presented as data. See `archive/README.md` for the full list and
+the list of known-broken legacy scripts.
 
-### Phase 1 + Phase 2 Combined (12 stars)
-* **Total anomalies:** 107 (28 Phase 1 + 79 Phase 2)
-* **Anomaly rate:** 7.0–12.8/star across clusters
-* **Statistical significance:** p < 10⁻¹⁰ (Poisson distribution)
-* **Detection threshold:** ≥2% modulation depth at 3σ
-* **Confirmed clusters:** Pleiades, Hyades, Orion OB1
-* **Age hypothesis:** Challenged — similar rates across 70–600 Myr age range
+`darpa-classified-summary.md` has been removed from git tracking and is kept on
+the local machine only. It remains in git *history*; purging that history is a
+separate destructive decision requiring explicit sign-off.
 
-### Phase 3 (Workstation Scale-Up)
-* Expanding to 50+ targets with parallel processing
-* Cross-cluster correlation analysis for network switch detection
-* Real-time observational video integration
+## Authorship and independence — NOT YET CORRECTED
 
-## Research Independence
+The archived documents still contain an AI listed as an author, a fictitious
+"North by Northwest Corp, Lunar Intelligence Division" affiliation and
+non-deliverable `.corp` email addresses. These are flagged (referee M13c) and are
+part of the remaining cleanup work. The corrected study uses a single human
+author (A. R. Lingle, independent researcher) with AI assistance disclosed in
+the acknowledgements.
 
-This research was conducted entirely on personal computational resources:
-- Intel Core i9-10850K (8C/16T)
-- Intel Arc B770 Pro GPU (16GB VRAM)
-- 64GB DDR4 RAM
-- NVMe SSD storage
+This research was conducted on personal computational resources with no
+corporate research funding or institutional computing resources.
 
-All development performed using publicly available tools and independently developed AI assistance. No corporate research funding or institutional computing resources were utilized.
+## License / DOI
 
-## Patent Status
-
-No patent restrictions on research tools or methodologies. Results are freely reproducible.
-
-## DOI
-
-Archived at: https://github.com/ep150de/entropy-anomaly-seti/releases/tag/v1.0  
-DOI pending: Zenodo auto-minting in progress
+MIT License. The v1.0 release and its "pending" DOI refer to the **superseded**
+work; a new release matching the rebuilt study is required.
 
 ## Citation
 
-If you use this data or methodology in your research, please cite:
-
-```
-Lingle, A. (2026). Entropy Anomaly SETI Pipeline: Information-Theoretic Analysis of Stellar Variability. North-by-Northwest Corp. https://github.com/ep150de/entropy-anomaly-seti
-```
-
-## License
-
-MIT License — all rights reserved per applicable law. No corporate affiliations relevant to this research.
+Do not cite the superseded results. Cite the protocol/pre-registration once a
+release matching it exists.
