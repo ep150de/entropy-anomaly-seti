@@ -1,0 +1,145 @@
+{
+  "protocol_version": "2.0.0",
+  "status": "PRE-REGISTERED before any outcome data have been inspected; analysis implementation is the next phase",
+  "registered_on": "2026-11-14",
+  "registered_by": "A. R. Lingle (sole author)",
+  "supersedes": "all Phase 1/2 detection claims and catalogs in this repository (falsified 2026-11-14)",
+  "target_outlet": "RNAAS / methods or null-result note",
+  "commitment": "Results will be written up and made public regardless of sign. A null result is the expected primary outcome and will not be reframed as a detection.",
+
+  "hypothesis": {
+    "null": "After instrumental-systematics removal and with a calibrated complexity estimator, the rate of low-complexity EVENTS in confirmed Pleiades members is statistically indistinguishable from (a) matched field controls in the same TESS sectors/cameras/CCDs and (b) phase-randomised surrogates preserving power spectrum, amplitude distribution and gaps.",
+    "alternative": "Pleiades members show an excess of low-complexity events with a global trials-corrected p < 0.01 AND the events recur in the same stars across independent sectors AND survive pixel-level vetting.",
+    "decision_rule": "H1 is accepted ONLY if every one of its conditions holds simultaneously. If any single condition fails, H0 stands and the result is reported as a null result / systematics characterisation. Detection language and 'quantum network' framing are prohibited in all outputs.",
+    "signal_model": "Narrow-band non-natural intensity modulation: duty cycle 0.1-0.5, bit length 0.5-4 h, depth 0.02%-2%, repetition not an integer multiple of the stellar rotation period, persisting across >=2 independent sectors. Estimator response to this model is fixed by injection BEFORE real-data tests.",
+    "falsifiable": true
+  },
+
+  "sample": {
+    "cluster": "Pleiades",
+    "center_ra_deg": 56.75,
+    "center_dec_deg": 24.12,
+    "cone_radius_deg": 3.0,
+    "parallax_mas": [6.5, 8.5],
+    "pmra_mas_yr": [10.0, 30.0],
+    "pmdec_mas_yr": [-55.0, -35.0],
+    "ruwe_max": 1.4,
+    "parallax_over_error_min": 10.0,
+    "tmag_max": 13.0,
+    "contamination_ratio_max": 0.10,
+    "gaia_dr": "DR3",
+    "tic_version": "TIC v8.2",
+    "blend_merge_radius_arcsec": 21.0,
+    "sectors": [42, 43, 44, 70, 71],
+    "data_product_primary": "SPOC 2-min PDCSAP",
+    "data_product_fallback": "TESS-SPOC FFI 200s for the ENTIRE sample (never mixed)",
+    "require_single_product_class": true,
+    "record_mast_product_id": true
+  },
+
+  "controls": {
+    "source": "field stars in the SAME sector / camera / CCD",
+    "exclude": "cluster parallax + proper-motion locus and the cluster cone",
+    "match_tmag_tolerance": 0.5,
+    "min_ratio_controls_per_target": 5,
+    "min_total_controls": 300,
+    "same_cadence_and_product": true
+  },
+
+  "preprocessing": {
+    "quality_bitmask": "hard",
+    "report_purge_fraction_per_star": true,
+    "detrend": "biweight time-windowed robust filter",
+    "detrend_window_days": 0.5,
+    "sigma_clip_per_cadence": 5.0,
+    "sigma_clip_iterations": 3,
+    "record_flagged_cadences": true,
+    "time_based_windows": true,
+    "max_gap_to_split_days": 0.5,
+    "never_window_across_gaps": true
+  },
+
+  "statistic": {
+    "primary": "normalized Lempel-Ziv complexity (LZ76)",
+    "secondary": "permutation entropy (Bandt-Pompe, order 6)",
+    "symbolization": {
+      "scale": "fixed per-star robust noise sigma (MAD of clipped detrended residuals)",
+      "fixed_range_sigma": 5.0,
+      "levels": 256,
+      "clip_out_of_range": true,
+      "never_per_window_minmax": true
+    },
+    "window_cadences": 150,
+    "primary_stride": 150,
+    "sensitivity_stride": 10,
+    "event_definition": "maximal run of consecutive flagged windows = 1 event",
+    "report_both_window_and_event_counts": true
+  },
+
+  "null_model": {
+    "surrogates_per_star": 1000,
+    "method": "IAAFT phase-randomisation preserving power spectrum, amplitude distribution and gap structure",
+    "simulations": ["white", "GP red noise", "spotted rotator", "flare", "eclipsing binary"],
+    "threshold": "1st percentile of the star's own surrogate complexity distribution",
+    "pre_registered_threshold": true,
+    "no_self_referenced_mu_minus_3sigma": true
+  },
+
+  "significance": {
+    "primary_endpoint": "global two-sample event-rate test, targets vs matched controls",
+    "rate_model": "negative binomial (overdispersion allowed); Poisson as sensitivity",
+    "multiple_testing": "Benjamini-Hochberg FDR across stars and windows",
+    "look_elsewhere": "all pre-registered parameter grids included in the trials factor",
+    "alpha_global": 0.01,
+    "report_upper_limits_when_null": true,
+    "report_confidence_intervals": "95% bootstrap"
+  },
+
+  "validation": {
+    "injection_count_min": 1000,
+    "injection_grid": {
+      "depth_pct": [0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0],
+      "bit_length_h": [0.5, 1, 2, 4],
+      "duty_cycle": [0.1, 0.25, 0.5]
+    },
+    "report_roc": true,
+    "baseline": "matched filter / BLS on the identical data",
+    "report_false_alarm_rate": true
+  },
+
+  "vetting": {
+    "for_every_surviving_event": [
+      "TPF / FFI cutout", "difference image", "centroid motion", "background flux",
+      "CROWDSAP contamination", "quality flags", "momentum-dump times",
+      "same-timestamp neighbours on the same CCD"
+    ],
+    "instrumental_verdict_if": "event coincides with ANY CCD-wide systematic or flagged cadence"
+  },
+
+  "falsification_tests": [
+    "event rate consistent with matched controls at 95% -> H1 rejected",
+    "events vanish under hard mask or 5-sigma clipping -> instrumental",
+    "events coincide with shared CCD systematics / scattered-light epochs -> instrumental",
+    "no recurrence of the same stars in S70/71 vs S42-44 -> not persistent",
+    "complexity estimator lacks dynamic range on simulations -> method invalid, stop"
+  ],
+
+  "reproducibility": {
+    "planned_entry_point": "pipeline/run_study_v2.py",
+    "planned_entry_point_status": "NOT YET IMPLEMENTED - pre-registration precedes implementation by design",
+    "pinned_lockfile": true,
+    "fixed_seeds": {"surrogates": 20261114, "injections": 20261115, "bootstrap": 20261116},
+    "archive_mast_product_ids": true,
+    "zenodo_doi_for_exact_snapshot": true,
+    "regenerate_all_tables_and_figures": true,
+    "figures_must_fail_on_missing_input": true,
+    "simulated_figures_prohibited": true
+  },
+
+  "authorship": {
+    "authors": ["A. R. Lingle"],
+    "ai_disclosure": "AI-assisted analysis disclosed in acknowledgements; AI is not an author",
+    "affiliation": "independent researcher",
+    "prohibited_documents": ["darpa-classified-summary.md", "reports/observational-network-switch-report.md"]
+  }
+}
