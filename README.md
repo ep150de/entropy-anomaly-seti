@@ -81,13 +81,17 @@ the list of known-broken legacy scripts.
 the local machine only. It remains in git *history*; purging that history is a
 separate destructive decision requiring explicit sign-off.
 
-## Authorship and independence — NOT YET CORRECTED
+## Authorship and independence — CORRECTED in archived docs (2026-11-14)
 
-The archived documents still contain an AI listed as an author, a fictitious
-"North by Northwest Corp, Lunar Intelligence Division" affiliation and
-non-deliverable `.corp` email addresses. These are flagged (referee M13c) and are
-part of the remaining cleanup work. The corrected study uses a single human
-author (A. R. Lingle, independent researcher) with AI assistance disclosed in
+The archived documents now carry a prominent **WITHDRAWN / SUPERSEDED** banner and
+their authorship has been corrected: sole human author (Alexander Ross Lingle,
+independent researcher), the AI tool removed as co-author, the fictitious
+"North by Northwest Corp, Lunar Intelligence Division" affiliation removed, and
+non-deliverable `.corp` contact addresses removed. AI assistance is disclosed in
+acknowledgements only. The falsified scientific claims in those documents were
+left unchanged as a record and are explicitly flagged in each banner.
+
+The corrected study uses a single human author with AI assistance disclosed in
 the acknowledgements.
 
 This research was conducted on personal computational resources with no

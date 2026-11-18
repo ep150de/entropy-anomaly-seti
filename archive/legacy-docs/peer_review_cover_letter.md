@@ -1,3 +1,13 @@
+> # ⛔ WITHDRAWN — SUPERSEDED, NOT FOR SUBMISSION
+>
+> Rejected on first-pass review (2026-11-14); central claims independently
+> reproduced as **false**. Retained in `archive/` for transparency only.
+> **Every quantitative claim below is unsupported or fabricated** (the "22
+> control stars", ">5σ", "GRACE cross-validation" and hard-coded `p<10⁻¹⁵`
+> have no code or data behind them). Authorship/affiliation/contact corrected
+> below; the scientific claims are intentionally left unchanged as a record.
+> See `PROTOCOL.md` and `archive/README.md`.
+
 Subject: Submission to ApJ Letters — Manuscript ID: ApJ-L-2026-XXX
 
 To: Editorial Office, The Astrophysical Journal Letters
@@ -38,13 +48,15 @@ Thank you for considering our submission. We look forward to your favorable resp
 Sincerely,
 
 /signature/
-Alexander Ross Lingle, P.E.
-Principal Investigator
-North-by-Northwest Corp.
+Alexander Ross Lingle (sole author)
 Independent Researcher
 
 Contact Information:
-Email: alex.lingle@northbynorthwest.corp
-Phone: [On file with NASA SBIR program]
+Email: removed — the `.corp` addresses in this document were not deliverable.
+Phone: removed — the "NASA SBIR program" reference had no basis.
+
+Authorship note: AI tools are not authors; AI assistance is disclosed in the
+acknowledgements. No "North-by-Northwest Corp, Lunar Intelligence Division"
+affiliation is claimed.
 
 Enclosures: Main manuscript (12 pages), Figures (4), Tables (1), Supplementary materials (online only)

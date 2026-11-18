@@ -1,3 +1,12 @@
+> # ⛔ WITHDRAWN — SUPERSEDED, NOT FOR SUBMISSION
+>
+> Rejected on first-pass review (2026-11-14); central claims independently
+> reproduced as **false**. Retained in `archive/` for transparency only.
+> Authorship/contact corrected below. Hardware descriptions in the "Independent
+> Development" section are inconsistent across documents and were flagged as a
+> credibility issue (referee M13d) — they are left unchanged as a record.
+> See `PROTOCOL.md` and `archive/README.md`.
+
 CONFLICT OF INTEREST DISCLOSURE FORM
 The Astrophysical Journal Letters Submission
 
@@ -40,9 +49,11 @@ I further certify that this work does not contain any proprietary or confidentia
 SIGNATURE
 
 Signature: /Alexander Ross Lingle/
-Name: Alexander Ross Lingle
+Name: Alexander Ross Lingle (sole author; independent researcher)
 Date: October 8, 2026
-Email: alex.lingle@northbynorthwest.corp
+Email: removed — the `.corp` address was not deliverable.
+Authorship note: AI tools are not authors; AI assistance is disclosed in
+acknowledgements only.
 
 □ I have read and understood the above disclosures
 □ All statements are true and complete to the best of my knowledge

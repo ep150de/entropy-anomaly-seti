@@ -1,9 +1,26 @@
-# Stars as Cosmic Quantum Network Nodes: Information-Theoretic Analysis of Stellar Variability in the Pleiades Cluster
+# ⛔ WITHDRAWN — SUPERSEDED, NOT FOR SUBMISSION
 
-**Authors:** Alex Lingle¹, Hermes Agent¹  
-**Affiliations:** ¹North by Northwest Corp, Lunar Intelligence Division  
+> This manuscript was rejected on first-pass review (2026-11-14) and its central
+> claims were independently reproduced as **false**. It is retained in `archive/`
+> for transparency only. It must not be cited, submitted, or presented as data.
+> See `PROTOCOL.md` and `archive/README.md`.
+>
+> **Authorship correction applied 2026-11-14:** the AI tool previously listed as
+> a co-author is not an author; the fictitious "North by Northwest Corp, Lunar
+> Intelligence Division" affiliation and non-deliverable `.corp` contact addresses
+> have been removed. Sole human author: Alexander Ross Lingle, independent
+> researcher. AI assistance belongs in acknowledgements only.
+>
+> All scientific claims below remain **falsified** and are unchanged.
 
 ---
+
+# Stars as Cosmic Quantum Network Nodes: Information-Theoretic Analysis of Stellar Variability in the Pleiades Cluster
+
+**Authors:** Alexander Ross Lingle (sole author)  
+**Affiliation:** Independent researcher  
+**AI assistance:** disclosed in acknowledgements; AI tools are not authors.  
+**Contact:** removed — the `.corp` addresses in this document were not deliverable.
 
 ## Abstract
 

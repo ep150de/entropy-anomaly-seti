@@ -39,7 +39,11 @@ original manuscript. Its decisive findings were independently reproduced on
 - `legacy-figures/` — simulated / schematic PNGs from `figures/`
 - `legacy-visualizations/` — PNGs + `cluster_statistics.csv` from `results/visualizations/`
 - `legacy-docs/` — old paper (`.md`, `.tex`, `.pdf`), cover letter, COI form,
-  Phase-2 report, execution plan, release notes, network-switch report
+  Phase-2 report, execution plan, release notes, network-switch report.
+  Each of the four submission documents carries a WITHDRAWN banner and had its
+  authorship corrected on 2026-11-14 (sole human author; AI removed as co-author;
+  fictitious affiliation and `.corp` contacts removed). Their falsified scientific
+  claims were deliberately left unchanged as a record.
 - Root duplicate catalogs (`expanded_star_catalog.csv`, `expanded_batch_results.csv`)
   were removed from tracking; the canonical copies in `data/` are also superseded.
 
