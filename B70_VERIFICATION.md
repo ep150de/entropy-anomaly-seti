@@ -112,6 +112,22 @@ Chromebook probe on the shared Pleiades members.
 - All sectors are in the pre-registered set; cameras/CCDs are populated.
 - Any disagreement is a **finding**, not something to patch silently.
 
+## Troubleshooting (from the 2026-11-18 B70 run)
+
+- **`ValueError: duplicate tic_id <id>`** — fixed. The validator used to key
+  uniqueness on `tic_id` alone, but one target legitimately appears once per
+  (sector, camera, ccd). It now keys on the observation tuple, counts unique
+  stars for the control ratio, and `build()` defensively dedups repeated rows
+  from MAST cone queries. Added a self-test regression for this exact case.
+- **A wall of `... not in pre-registered sectors — DROPPED` lines** — this was a
+  logging artifact, not a total failure: `assign_sectors` printed only dropped
+  stars and never the kept ones. The build had in fact produced
+  `Matched controls: 14330`. It now prints a `KEPT / dropped` summary, shows
+  only the first 5 drops with the sectors tess-point actually returned, and
+  raises a clear error if *no* target survives.
+- If the build still ends with an error, paste the full traceback plus the
+  `tess-point: N targets KEPT / M dropped` line above it.
+
 ## Honest expectation
 
 Per the referee's Section 6, a properly rebuilt sample with matched controls will

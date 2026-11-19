@@ -162,21 +162,27 @@ def validate_catalog(rows, proto, sha):
     c_tol = float(proto["controls"]["match_tmag_tolerance"])
     if not rows:
         raise ValueError("empty catalog")
-    seen_tic, seen_gaia = set(), set()
+    # Uniqueness is on the OBSERVATION tuple, not tic_id alone. One target
+    # legitimately appears once per (sector, camera, ccd) -- a Pleiades star in
+    # 5 sectors = 5 rows. (Bug found on the B70 run 2026-11-18: the old check
+    # rejected row 1 as a "duplicate tic_id".)
+    seen_obs, seen_gaia = set(), set()
     allowed_sectors = set(int(x) for x in s["sectors"])
     for n, r in enumerate(rows):
         for k in CATALOG_FIELDS:
             if k not in r:
                 raise ValueError(f"row {n}: missing column {k}")
-        tic = str(r["tic_id"])
-        if tic in seen_tic:
-            raise ValueError(f"row {n}: duplicate tic_id {tic}")
-        seen_tic.add(tic)
-        g = str(r["gaia_source_id"])
-        if g and g != "None":
-            if g in seen_gaia:
-                raise ValueError(f"row {n}: duplicate gaia_source_id {g}")
-            seen_gaia.add(g)
+        key = (str(r["tic_id"]), str(r.get("sector", "")),
+               str(r.get("camera", "")), str(r.get("ccd", "")))
+        if key in seen_obs:
+            raise ValueError(f"row {n}: duplicate observation tuple {key}")
+        seen_obs.add(key)
+        key_g = (str(r["gaia_source_id"]), str(r.get("sector", "")),
+                 str(r.get("camera", "")), str(r.get("ccd", "")))
+        if key_g[0] and key_g[0] != "None":
+            if key_g in seen_gaia:
+                raise ValueError(f"row {n}: duplicate gaia observation {key_g}")
+            seen_gaia.add(key_g)
         ra, dec = float(r["ra_deg"]), float(r["dec_deg"])
         if not (-90 <= dec <= 90 and 0 <= ra < 360):
             raise ValueError(f"row {n}: impossible coordinates ({ra}, {dec})")
@@ -199,11 +205,13 @@ def validate_catalog(rows, proto, sha):
         if str(r["role"]) not in ("target", "control"):
             raise ValueError(f"row {n}: invalid role {r['role']}")
     enforce_provenance(rows, sha)
-    # Controls must satisfy the pre-registered minimum ratio
-    n_t = sum(1 for r in rows if r["role"] == "target")
-    n_c = sum(1 for r in rows if r["role"] == "control")
+    # Count UNIQUE STARS, not rows: one target appears once per sector, so
+    # row counts would inflate the target side and wrongly fail the ratio.
+    t_ids = {str(r["tic_id"]) for r in rows if r["role"] == "target"}
+    c_ids = {str(r["tic_id"]) for r in rows if r["role"] == "control"}
+    n_t, n_c = len(t_ids), len(c_ids)
     if n_t and n_c < proto["controls"]["min_total_controls"]:
-        raise ValueError(f"only {n_c} controls; protocol requires "
+        raise ValueError(f"only {n_c} unique controls; protocol requires "
                          f">= {proto['controls']['min_total_controls']}")
     if n_t and n_c < n_t * proto["controls"]["min_ratio_controls_per_target"]:
         raise ValueError("control:target ratio below protocol minimum")
@@ -293,13 +301,14 @@ def assign_sectors(rows, proto):
             "Sectors will NOT be guessed.") from e
     allowed = set(int(x) for x in proto["sample"]["sectors"])
     out = []
+    n_kept, n_dropped = 0, 0
     for r in rows:
         result = tess_stars2px_function_entry(
             r["tic_id"], float(r["ra_deg"]), float(r["dec_deg"]))
         sectors = list(result[3]) if len(result) > 3 else []
         cams = list(result[4]) if len(result) > 4 else []
         ccds = list(result[5]) if len(result) > 5 else []
-        kept = False
+        kept_sectors = []
         for i, sec in enumerate(sectors):
             if int(sec) in allowed:
                 rr = dict(r)
@@ -308,11 +317,25 @@ def assign_sectors(rows, proto):
                 rr["ccd"] = int(ccds[i]) if i < len(ccds) else ""
                 rr["provenance"] = r["provenance"] + f"; tess-point sector={sec}"
                 out.append(rr)
-                kept = True
-        if not kept:
-            print(f"    TIC {r['tic_id']}: not in pre-registered sectors — DROPPED")
+                kept_sectors.append(int(sec))
+        if kept_sectors:
+            n_kept += 1
+        else:
+            n_dropped += 1
+            # Only print the first few; a wall of DROPPED lines with no KEPT
+            # lines is misleading about what actually survived.
+            if n_dropped <= 5:
+                print(f"    TIC {r['tic_id']}: tess-point sectors "
+                      f"{sorted({int(x) for x in sectors})} not in "
+                      f"{sorted(allowed)} — DROPPED")
+    print(f"  tess-point: {n_kept} targets KEPT / {n_dropped} dropped "
+          f"-> {len(out)} observation rows")
+    if n_dropped > 5:
+        print(f"    ({n_dropped - 5} further dropped targets suppressed from log)")
     if not out:
-        raise RuntimeError("no target falls in pre-registered sectors — refusing")
+        raise RuntimeError(f"no target falls in pre-registered sectors "
+                           f"{sorted(allowed)} — refusing (tess-point returned "
+                           f"no matching sector for any of {len(rows)} targets)")
     return out
 
 
@@ -477,11 +500,28 @@ def self_test():
     stats = validate_catalog(good, proto, sha)
     print(f"  [PASS] full schema validation: {stats}")
 
-    # Validation must REJECT a duplicate TIC and a bogus sector
+    # Regression test for the B70 crash (2026-11-18): one target legitimately
+    # appears once per sector. The old validator keyed on tic_id alone and
+    # rejected row 1 as "duplicate tic_id 346626171".
+    multisector = []
+    for sec in proto["sample"]["sectors"]:
+        row = dict(good[0])
+        row["sector"] = sec
+        multisector.append(row)
+    multi = multisector + [r for r in good if r["role"] == "control"]
+    try:
+        st = validate_catalog(multi, proto, sha)
+        assert st["n_targets"] == 1, st
+        print(f"  [PASS] one target across {len(proto['sample']['sectors'])} "
+              f"sectors is accepted (B70 duplicate-tic_id regression)")
+    except ValueError as e:
+        raise AssertionError(f"multi-sector rows wrongly rejected: {e}")
+
+    # Validation must REJECT a true duplicate observation tuple and a bogus sector
     dup = good + [dict(good[0])]
     try:
         validate_catalog(dup, proto, sha)
-        raise AssertionError("duplicate tic_id accepted")
+        raise AssertionError("exact duplicate observation tuple accepted")
     except ValueError:
         pass
     badsec = [dict(r) for r in good]
@@ -550,7 +590,24 @@ def build(proto, sha):
     print(f"  Blend merge collapsed {collapsed} duplicate source(s)")
     rows = assign_sectors(rows, proto)
     controls = build_controls(rows, proto, sha)
-    rows = fill_defaults(rows + controls, proto, sha)
+    all_rows = fill_defaults(rows + controls, proto, sha)
+
+    # Defensive dedup on the observation tuple. MAST cone queries can return
+    # the same TIC more than once, and controls are generated per (sector,
+    # camera, ccd). Drop exact duplicates rather than failing the whole build.
+    seen, rows, n_dup = set(), [], 0
+    for r in all_rows:
+        key = (str(r["tic_id"]), str(r.get("sector", "")),
+               str(r.get("camera", "")), str(r.get("ccd", "")))
+        if key in seen:
+            n_dup += 1
+            continue
+        seen.add(key)
+        rows.append(r)
+    if n_dup:
+        print(f"  deduplicated {n_dup} repeated observation rows")
+    print(f"  total rows after dedup: {len(rows)}")
+
     validate_catalog(rows, proto, sha)
     path = write_catalog(rows)
     print(f"\n  WROTE {len(rows)} rows -> {path}")

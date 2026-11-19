@@ -96,9 +96,10 @@ def main():
           f"{len(bad_sec)} row(s) outside {sorted(allowed)}" if bad_sec else "")
     check(not no_cam, "camera populated", f"{len(no_cam)} missing" if no_cam else "")
 
-    # 6. controls
-    n_t = sum(1 for r in rows if r.get("role") == "target")
-    n_c = sum(1 for r in rows if r.get("role") == "control")
+    # 6. controls — count UNIQUE STARS (a target/control can span sectors)
+    t_ids = {r["tic_id"] for r in rows if r.get("role") == "target"}
+    c_ids = {r["tic_id"] for r in rows if r.get("role") == "control"}
+    n_t, n_c = len(t_ids), len(c_ids)
     min_c = proto["controls"]["min_total_controls"]
     ratio = proto["controls"]["min_ratio_controls_per_target"]
     check(n_c >= min_c, f"controls >= {min_c}", f"found {n_c}")
